@@ -1,0 +1,1712 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Usahaku — Manajemen Usaha</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+tailwind.config = {
+  theme: { extend: { colors: {
+    brand: {50:'#eef2ff',100:'#e0e7ff',500:'#6366f1',600:'#4f46e5',700:'#4338ca'}
+  }}}
+};
+</script>
+<style>
+  body{font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+  .view{display:none}
+  .view.active{display:block}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]{-moz-appearance:textfield}
+  @media print {
+    body *{visibility:hidden}
+    #printArea, #printArea *{visibility:visible}
+    #printArea{position:absolute;left:0;top:0;width:80mm;background:#fff}
+  }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+
+<div id="app"></div>
+<div id="printArea" class="hidden"></div>
+<div id="modalRoot"></div>
+
+<script>
+/* ============================================================
+   USHAKU — Single-file Business Management App
+   ============================================================ */
+
+const STORAGE_KEY = 'kasirin_db_v1';
+let DB = {
+  business: null,
+  products: [],
+  suppliers: [],
+  customers: [],
+  sales: [],
+  purchases: [],
+  cash: [],
+  stockMoves: [],
+  settings: { hppMethod:'average', printerMode:'browser' }
+};
+let currentView = 'dashboard';
+let bluetoothChar = null;
+
+/* ---------- Helpers ---------- */
+const uid = (p='') => p + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+const rp = n => 'Rp ' + (Number(n)||0).toLocaleString('id-ID');
+const todayStr = () => new Date().toISOString().slice(0,10);
+const nowStr = () => new Date().toLocaleString('id-ID');
+const fmtDate = s => s ? new Date(s).toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'}) : '-';
+const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function loadDB(){
+  try{ const r = localStorage.getItem(STORAGE_KEY); if(r) DB = {...DB, ...JSON.parse(r)}; }catch(e){}
+}
+function saveDB(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); }
+
+function findProduct(id){ return DB.products.find(p=>p.id===id); }
+function productStock(id){
+  return DB.stockMoves.filter(m=>m.productId===id).reduce((a,m)=>a + (m.type==='in'?m.qty:-m.qty), 0);
+}
+function productAvgCost(id){
+  const moves = DB.stockMoves.filter(m=>m.productId===id);
+  let qty=0,val=0;
+  for(const m of moves){
+    if(m.type==='in'){ qty+=m.qty; val += m.qty*m.cost; }
+    else { if(qty>0){ const c=val/qty; qty-=m.qty; val-=m.qty*c; } }
+  }
+  return qty>0 ? val/qty : (findProduct(id)?.buyPrice||0);
+}
+
+/* ---------- Onboarding ---------- */
+const BUSINESS_TYPES = [
+  {id:'retail', name:'Toko / Retail', icon:'🛒', desc:'Minimarket, fashion, elektronik'},
+  {id:'kuliner', name:'Kuliner / Restoran', icon:'🍽️', desc:'Restoran, cafe, warung, catering'},
+  {id:'jasa', name:'Jasa / Servis', icon:'🔧', desc:'Bengkel, salon, laundry'},
+  {id:'apotek', name:'Apotek / Klinik', icon:'💊', desc:'Apotek, toko obat, klinik'},
+  {id:'grosir', name:'Grosir / Distributor', icon:'📦', desc:'Grosir, distributor, supplier'},
+  {id:'lainnya', name:'Lainnya', icon:'🏢', desc:'Usaha lainnya'},
+];
+
+function renderOnboarding(){
+  return `
+  <div class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-brand-50 via-white to-brand-100">
+    <div class="w-full max-w-3xl">
+      <div class="text-center mb-8">
+        <div class="text-5xl mb-2">🏪</div>
+        <h1 class="text-3xl font-bold text-slate-800">Usahaku</h1>
+        <p class="text-slate-500 mt-1">Kelola stok, uang, HPP, hutang & piutang dalam satu aplikasi</p>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow-xl p-8">
+        <h2 class="font-semibold text-lg mb-4">1. Pilih jenis usaha Anda</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6" id="typeGrid">
+          ${BUSINESS_TYPES.map(t=>`
+            <button data-type="${t.id}" class="type-btn border-2 border-slate-200 hover:border-brand-500 rounded-xl p-4 text-left transition">
+              <div class="text-2xl mb-1">${t.icon}</div>
+              <div class="font-semibold text-sm">${t.name}</div>
+              <div class="text-xs text-slate-500 mt-1">${t.desc}</div>
+            </button>
+          `).join('')}
+        </div>
+
+        <h2 class="font-semibold text-lg mb-3">2. Informasi usaha</h2>
+        <div class="grid md:grid-cols-2 gap-3 mb-4">
+          <div><label class="text-sm text-slate-600">Nama Usaha *</label>
+            <input id="obName" class="w-full mt-1 border rounded-lg px-3 py-2" placeholder="Contoh: Toko Berkah Jaya"/></div>
+          <div><label class="text-sm text-slate-600">Nama Pemilik</label>
+            <input id="obOwner" class="w-full mt-1 border rounded-lg px-3 py-2" placeholder="Nama Anda"/></div>
+          <div><label class="text-sm text-slate-600">Alamat</label>
+            <input id="obAddress" class="w-full mt-1 border rounded-lg px-3 py-2" placeholder="Alamat usaha"/></div>
+          <div><label class="text-sm text-slate-600">No. HP</label>
+            <input id="obPhone" class="w-full mt-1 border rounded-lg px-3 py-2" placeholder="08xxxxxxxxxx"/></div>
+        </div>
+
+        <button id="obStart" class="w-full bg-brand-600 hover:bg-brand-700 text-white py-3 rounded-lg font-semibold transition">
+          Mulai Gunakan Aplikasi →
+        </button>
+        <p class="text-xs text-slate-400 text-center mt-3">Data disimpan lokal di browser Anda. Lakukan backup rutin dari menu Pengaturan.</p>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindOnboarding(){
+  let selected = null;
+  document.querySelectorAll('.type-btn').forEach(btn=>{
+    btn.onclick = () => {
+      document.querySelectorAll('.type-btn').forEach(b=>b.classList.remove('border-brand-500','bg-brand-50'));
+      btn.classList.add('border-brand-500','bg-brand-50');
+      selected = btn.dataset.type;
+    };
+  });
+  document.getElementById('obStart').onclick = () => {
+    const name = document.getElementById('obName').value.trim();
+    if(!selected) return alert('Pilih jenis usaha terlebih dahulu');
+    if(!name) return alert('Nama usaha wajib diisi');
+    DB.business = {
+      id: uid('biz'),
+      type: selected,
+      name,
+      owner: document.getElementById('obOwner').value.trim(),
+      address: document.getElementById('obAddress').value.trim(),
+      phone: document.getElementById('obPhone').value.trim(),
+      createdAt: new Date().toISOString()
+    };
+    saveDB();
+    renderApp();
+  };
+}
+
+/* ---------- Main Layout ---------- */
+const MENU = [
+  {id:'dashboard', label:'Dashboard', icon:'📊'},
+  {id:'products', label:'Barang', icon:'📦'},
+  {id:'hpp', label:'Kalkulator HPP', icon:'🧮'},
+  {id:'suppliers', label:'Supplier', icon:'🏭'},
+  {id:'customers', label:'Pelanggan', icon:'👥'},
+  {id:'purchases', label:'Pembelian', icon:'🛍️'},
+  {id:'sales', label:'Penjualan', icon:'💰'},
+  {id:'cash', label:'Kas & Bank', icon:'💵'},
+  {id:'debts', label:'Hutang', icon:'📉'},
+  {id:'receivables', label:'Piutang', icon:'📈'},
+  {id:'reports', label:'Laporan', icon:'📑'},
+  {id:'settings', label:'Pengaturan', icon:'⚙️'},
+];
+
+function renderMain(){
+  const bizType = BUSINESS_TYPES.find(t=>t.id===DB.business.type) || BUSINESS_TYPES[5];
+  return `
+  <div class="min-h-screen flex">
+    <aside id="sidebar" class="hidden md:flex md:flex-col w-60 bg-white border-r border-slate-200 fixed md:static h-screen z-40">
+      <div class="p-4 border-b">
+        <div class="flex items-center gap-2">
+          <div class="w-9 h-9 bg-brand-600 rounded-lg flex items-center justify-center text-white font-bold">U</div>
+          <div>
+            <div class="font-bold text-sm">Usahaku</div>
+            <div class="text-xs text-slate-500">v1.0</div>
+          </div>
+        </div>
+      </div>
+      <nav class="flex-1 overflow-y-auto p-2">
+        ${MENU.map(m=>`
+          <button data-view="${m.id}" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm hover:bg-slate-100 mb-1">
+            <span>${m.icon}</span><span>${m.label}</span>
+          </button>
+        `).join('')}
+      </nav>
+      <div class="p-3 border-t text-xs text-slate-400 text-center">© ${new Date().getFullYear()} Usahaku</div>
+    </aside>
+
+    <div class="flex-1 min-w-0">
+      <header class="bg-white border-b px-4 py-3 flex items-center gap-3 sticky top-0 z-30">
+        <button id="toggleSide" class="md:hidden text-2xl">☰</button>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="text-xl">${bizType.icon}</span>
+            <h1 class="font-bold truncate">${esc(DB.business.name)}</h1>
+            <span class="hidden sm:inline text-xs bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full">${bizType.name}</span>
+          </div>
+        </div>
+        <button id="btnPrintMode" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50" title="Mode Printer">
+          🖨️ <span class="hidden sm:inline">Printer</span>
+        </button>
+      </header>
+
+      <main class="p-4 md:p-6 max-w-7xl mx-auto">
+        ${MENU.map(m=>`<section id="view-${m.id}" class="view"></section>`).join('')}
+      </main>
+    </div>
+  </div>`;
+}
+
+function bindMain(){
+  document.querySelectorAll('.nav-btn').forEach(btn=>{
+    btn.onclick = () => { navigate(btn.dataset.view); document.getElementById('sidebar').classList.add('hidden'); document.getElementById('sidebar').classList.remove('flex'); };
+  });
+  document.getElementById('toggleSide').onclick = () => {
+    const s = document.getElementById('sidebar');
+    s.classList.toggle('hidden'); s.classList.toggle('flex');
+  };
+  document.getElementById('btnPrintMode').onclick = openPrinterModal;
+}
+
+function navigate(view){
+  currentView = view;
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  const el = document.getElementById('view-'+view);
+  if(el){ el.classList.add('active'); el.innerHTML = VIEWS[view](); }
+  document.querySelectorAll('.nav-btn').forEach(b=>{
+    const on = b.dataset.view===view;
+    b.classList.toggle('bg-brand-50', on);
+    b.classList.toggle('text-brand-700', on);
+    b.classList.toggle('font-semibold', on);
+  });
+  if(VIEWS[view+'_bind']) VIEWS[view+'_bind']();
+}
+
+/* ---------- Modal ---------- */
+function openModal(title, bodyHTML, onOk, okLabel='Simpan'){
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = `
+    <div class="fixed inset-0 bg-black/50 z-50 flex items-start justify-center p-4 overflow-y-auto" id="modalBg">
+      <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mt-10" id="modalBox">
+        <div class="flex items-center justify-between p-4 border-b">
+          <h3 class="font-semibold">${title}</h3>
+          <button class="text-slate-400 hover:text-slate-700 text-xl" id="modalClose">×</button>
+        </div>
+        <div class="p-4 max-h-[70vh] overflow-y-auto">${bodyHTML}</div>
+        <div class="p-4 border-t flex justify-end gap-2">
+          <button id="modalCancel" class="px-4 py-2 rounded-lg border hover:bg-slate-50">Batal</button>
+          <button id="modalOk" class="px-4 py-2 rounded-lg bg-brand-600 text-white hover:bg-brand-700">${okLabel}</button>
+        </div>
+      </div>
+    </div>`;
+  const close = () => root.innerHTML='';
+  root.querySelector('#modalClose').onclick = close;
+  root.querySelector('#modalCancel').onclick = close;
+  root.querySelector('#modalOk').onclick = () => { if(onOk()!==false) close(); };
+}
+
+/* ---------- VIEWS ---------- */
+const VIEWS = {};
+
+/* === Dashboard === */
+VIEWS.dashboard = () => {
+  const today = todayStr();
+  const salesToday = DB.sales.filter(s=>s.date.slice(0,10)===today);
+  const revToday = salesToday.reduce((a,s)=>a+s.total,0);
+  const profitToday = salesToday.reduce((a,s)=>a+(s.total - s.items.reduce((b,i)=>b+i.qty*i.cost,0)),0);
+  const stockValue = DB.products.reduce((a,p)=>a + productStock(p.id)*productAvgCost(p.id), 0);
+  const cashBalance = DB.cash.reduce((a,c)=>a + (c.type==='in'?c.amount:-c.amount), 0);
+
+  const days = [...Array(7)].map((_,i)=>{
+    const d = new Date(); d.setDate(d.getDate()-6+i);
+    const key = d.toISOString().slice(0,10);
+    const total = DB.sales.filter(s=>s.date.slice(0,10)===key).reduce((a,s)=>a+s.total,0);
+    return { key, label: d.toLocaleDateString('id-ID',{day:'2-digit',month:'short'}), total };
+  });
+  const maxV = Math.max(...days.map(d=>d.total), 1);
+  const recent = [...DB.sales.slice(-5)].reverse();
+
+  return `
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      ${statCard('Penjualan Hari Ini', rp(revToday), '💰', 'bg-blue-50 text-blue-700')}
+      ${statCard('Laba Hari Ini', rp(profitToday), '📈', 'bg-emerald-50 text-emerald-700')}
+      ${statCard('Nilai Stok', rp(stockValue), '📦', 'bg-amber-50 text-amber-700')}
+      ${statCard('Saldo Kas', rp(cashBalance), '💵', 'bg-purple-50 text-purple-700')}
+    </div>
+
+    <div class="grid lg:grid-cols-3 gap-4">
+      <div class="lg:col-span-2 bg-white rounded-xl border p-4">
+        <h3 class="font-semibold mb-4">Penjualan 7 Hari Terakhir</h3>
+        <div class="flex items-end gap-2 h-40">
+          ${days.map(d=>`
+            <div class="flex-1 flex flex-col items-center justify-end gap-1">
+              <div class="text-[10px] text-slate-500">${d.total>0?Math.round(d.total/1000)+'k':''}</div>
+              <div class="w-full bg-brand-500 rounded-t" style="height:${(d.total/maxV)*100}%;min-height:2px"></div>
+              <div class="text-[10px] text-slate-500">${d.label}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl border p-4">
+        <h3 class="font-semibold mb-3">Transaksi Terakhir</h3>
+        ${recent.length? recent.map(s=>`
+          <div class="flex justify-between items-center py-2 border-b last:border-0 text-sm">
+            <div>
+              <div class="font-medium">${esc(s.customer||'Umum')}</div>
+              <div class="text-xs text-slate-500">${fmtDate(s.date)}</div>
+            </div>
+            <div class="font-semibold">${rp(s.total)}</div>
+          </div>
+        `).join('') : '<p class="text-sm text-slate-400">Belum ada transaksi</p>'}
+      </div>
+    </div>
+
+    <div class="grid md:grid-cols-4 gap-4 mt-4">
+      ${quickCard('Tambah Penjualan','💰','sales')}
+      ${quickCard('Tambah Pembelian','🛍️','purchases')}
+      ${quickCard('Tambah Barang','📦','products')}
+      ${quickCard('Kalkulator HPP','🧮','hpp')}
+    </div>
+  `;
+};
+const statCard = (label,val,icon,color) => `
+  <div class="bg-white rounded-xl border p-4">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs text-slate-500">${label}</span>
+      <div class="w-8 h-8 rounded-lg ${color} flex items-center justify-center">${icon}</div>
+    </div>
+    <div class="text-lg font-bold">${val}</div>
+  </div>`;
+const quickCard = (label,icon,view) => `
+  <button onclick="navigate('${view}')" class="bg-white rounded-xl border p-4 hover:border-brand-500 hover:shadow-md transition text-left">
+    <div class="text-2xl mb-1">${icon}</div>
+    <div class="font-semibold text-sm">${label}</div>
+  </button>`;
+
+/* === Products === */
+VIEWS.products = () => `
+  <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
+    <h2 class="text-xl font-bold">Daftar Barang</h2>
+    <div class="flex gap-2">
+      <button onclick="navigate('hpp')" class="border px-4 py-2 rounded-lg hover:bg-slate-50 text-sm">🧮 Kalkulator HPP</button>
+      <button onclick="openProductForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Tambah Barang</button>
+    </div>
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600">
+        <tr><th class="text-left p-3">SKU</th><th class="text-left p-3">Nama</th><th class="text-left p-3">Kategori</th>
+        <th class="text-right p-3">Harga Beli</th><th class="text-right p-3">Harga Jual</th>
+        <th class="text-right p-3">Stok</th><th class="text-right p-3">Aksi</th></tr>
+      </thead>
+      <tbody>
+        ${DB.products.length ? DB.products.map(p=>{
+          const st = productStock(p.id);
+          const low = st <= (p.minStock||0);
+          return `<tr class="border-t hover:bg-slate-50">
+            <td class="p-3 font-mono text-xs">${esc(p.sku||'-')}</td>
+            <td class="p-3 font-medium">${esc(p.name)}</td>
+            <td class="p-3">${esc(p.category||'-')}</td>
+            <td class="p-3 text-right">${rp(p.buyPrice)}</td>
+            <td class="p-3 text-right">${rp(p.sellPrice)}</td>
+            <td class="p-3 text-right ${low?'text-red-600 font-semibold':''}">${st} ${esc(p.unit||'')}</td>
+            <td class="p-3 text-right whitespace-nowrap">
+              <button onclick="openProductForm('${p.id}')" class="text-brand-600 hover:underline text-xs mr-2">Edit</button>
+              <button onclick="deleteProduct('${p.id}')" class="text-red-600 hover:underline text-xs">Hapus</button>
+            </td></tr>`;
+        }).join('') : `<tr><td colspan="7" class="p-8 text-center text-slate-400">Belum ada barang. Klik "+ Tambah Barang"</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+
+window.openProductForm = (id) => {
+  const p = id ? findProduct(id) : {name:'',sku:'',category:'',unit:'pcs',buyPrice:0,sellPrice:0,minStock:0};
+  openModal(id?'Edit Barang':'Tambah Barang', `
+    <div class="grid grid-cols-2 gap-3">
+      <div class="col-span-2"><label class="text-xs text-slate-500">Nama Barang *</label>
+        <input id="p_name" value="${esc(p.name)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">SKU / Kode</label>
+        <input id="p_sku" value="${esc(p.sku)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Kategori</label>
+        <input id="p_cat" value="${esc(p.category)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Satuan</label>
+        <input id="p_unit" value="${esc(p.unit)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Stok Minimum</label>
+        <input id="p_min" type="number" value="${p.minStock||0}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Harga Beli</label>
+        <input id="p_buy" type="number" value="${p.buyPrice||0}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Harga Jual</label>
+        <input id="p_sell" type="number" value="${p.sellPrice||0}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      ${!id? `<div class="col-span-2"><label class="text-xs text-slate-500">Stok Awal (opsional)</label>
+        <input id="p_stock" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1"/>
+        <p class="text-xs text-slate-400 mt-1">Stok awal akan dicatat sebagai mutasi masuk dengan harga = harga beli.</p></div>`:''}
+    </div>
+  `, ()=>{
+    const name = document.getElementById('p_name').value.trim();
+    if(!name) { alert('Nama wajib diisi'); return false; }
+    const data = {
+      name, sku:document.getElementById('p_sku').value.trim(),
+      category:document.getElementById('p_cat').value.trim(),
+      unit:document.getElementById('p_unit').value.trim()||'pcs',
+      minStock:+document.getElementById('p_min').value||0,
+      buyPrice:+document.getElementById('p_buy').value||0,
+      sellPrice:+document.getElementById('p_sell').value||0,
+    };
+    if(id){ Object.assign(findProduct(id), data); }
+    else {
+      const newP = {id:uid('p_'), ...data};
+      DB.products.push(newP);
+      const initStok = +document.getElementById('p_stock').value||0;
+      if(initStok>0){
+        DB.stockMoves.push({id:uid('m_'),date:new Date().toISOString(),productId:newP.id,type:'in',qty:initStok,cost:data.buyPrice,note:'Stok awal',ref:''});
+      }
+    }
+    saveDB(); navigate('products');
+  });
+};
+
+window.deleteProduct = (id) => {
+  if(!confirm('Hapus barang ini?')) return;
+  DB.products = DB.products.filter(p=>p.id!==id);
+  DB.stockMoves = DB.stockMoves.filter(m=>m.productId!==id);
+  saveDB(); navigate('products');
+};
+
+/* ============================================================
+   === HPP Calculator ===
+   ============================================================ */
+
+const UNIT_INFO = {
+  kg:    { cat:'mass',   factor:1000, base:'gram' },
+  gram:  { cat:'mass',   factor:1,    base:'gram' },
+  ons:   { cat:'mass',   factor:100,  base:'gram' },
+  liter: { cat:'volume', factor:1000, base:'ml' },
+  ml:    { cat:'volume', factor:1,    base:'ml' },
+  pcs:   { cat:'count',  factor:1,    base:'pcs' },
+  pack:  { cat:'count',  factor:null, base:'pcs' }
+};
+
+function getUnitFactor(unit, packSize){
+  const u = UNIT_INFO[unit];
+  if(!u) return 1;
+  if(unit === 'pack') return Math.max(1, +packSize || 1);
+  return u.factor;
+}
+function getUnitCategory(unit){ return UNIT_INFO[unit]?.cat || 'count'; }
+function getBaseUnitName(unit){ return UNIT_INFO[unit]?.base || 'pcs'; }
+function getCompatibleUnits(unit){
+  const cat = getUnitCategory(unit);
+  if(cat === 'mass') return ['kg','gram','ons'];
+  if(cat === 'volume') return ['liter','ml'];
+  return ['pcs','pack'];
+}
+
+VIEWS.hpp = () => `
+  <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
+    <div>
+      <h2 class="text-xl font-bold">🧮 Kalkulator HPP</h2>
+      <p class="text-xs text-slate-500 mt-1">Isi harga bahan dulu, lalu hitung pemakaian untuk resep — harga otomatis terhitung</p>
+    </div>
+    <button onclick="resetHPPCalc()" class="border px-3 py-2 rounded-lg text-sm hover:bg-slate-50">🔄 Reset</button>
+  </div>
+
+  <div class="grid lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2 space-y-4">
+
+      <div class="bg-white rounded-xl border p-4">
+        <div class="flex justify-between items-start mb-3">
+          <div>
+            <h3 class="font-semibold flex items-center gap-2">
+              <span class="w-6 h-6 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center text-xs font-bold">1</span>
+              Daftar Harga Bahan
+            </h3>
+            <p class="text-xs text-slate-500 mt-1 ml-8">Contoh: Tepung <b>Rp 10.000 / kg</b> — atau Gula <b>Rp 50.000 / pack</b> (isi 20 pcs)</p>
+          </div>
+          <button onclick="hppAddIngredient()" class="text-sm text-brand-600 hover:underline whitespace-nowrap">+ Bahan</button>
+        </div>
+        <div id="hpp_ingredients" class="space-y-2"></div>
+      </div>
+
+      <div class="bg-white rounded-xl border p-4">
+        <div class="flex justify-between items-start mb-3">
+          <div>
+            <h3 class="font-semibold flex items-center gap-2">
+              <span class="w-6 h-6 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center text-xs font-bold">2</span>
+              Pemakaian untuk Resep
+            </h3>
+            <p class="text-xs text-slate-500 mt-1 ml-8">Pilih bahan, isi jumlah yang dipakai (mis. <b>100 gram</b>) → harga muncul otomatis</p>
+          </div>
+          <button onclick="hppAddUsage()" class="text-sm text-brand-600 hover:underline whitespace-nowrap">+ Pemakaian</button>
+        </div>
+        <div id="hpp_usages" class="space-y-2"></div>
+      </div>
+
+      <div class="bg-white rounded-xl border p-4">
+        <div class="flex justify-between items-start mb-3">
+          <div>
+            <h3 class="font-semibold flex items-center gap-2">
+              <span class="w-6 h-6 bg-brand-100 text-brand-700 rounded-full flex items-center justify-center text-xs font-bold">3</span>
+              Biaya Overhead (per batch)
+            </h3>
+            <p class="text-xs text-slate-500 mt-1 ml-8">Gas, listrik, tenaga kerja, kemasan, sewa</p>
+          </div>
+          <button onclick="addHPPOverhead()" class="text-sm text-brand-600 hover:underline whitespace-nowrap">+ Biaya</button>
+        </div>
+        <div id="hpp_overhead" class="space-y-2"></div>
+      </div>
+
+      <div class="bg-white rounded-xl border p-4">
+        <label class="text-xs text-slate-500">Nama Produk (opsional — dipakai saat menyimpan sebagai Barang)</label>
+        <input id="hpp_name" class="w-full border rounded-lg px-3 py-2 mt-1" placeholder="Contoh: Nasi Goreng Spesial"/>
+      </div>
+    </div>
+
+    <div class="space-y-4">
+      <div class="bg-white rounded-xl border p-4 lg:sticky lg:top-20">
+        <h3 class="font-semibold mb-3">📊 Hasil Perhitungan</h3>
+
+        <div class="space-y-3 mb-4">
+          <div>
+            <label class="text-xs text-slate-500">Jumlah Hasil Produksi (batch)</label>
+            <input id="hpp_batch" type="number" value="1" min="1" class="w-full border rounded-lg px-3 py-2 mt-1" oninput="calcHPP()"/>
+            <p class="text-xs text-slate-400 mt-1">Berapa porsi/unit dari resep di atas</p>
+          </div>
+          <div>
+            <label class="text-xs text-slate-500">Margin Keuntungan (%)</label>
+            <input id="hpp_margin" type="number" value="30" min="0" class="w-full border rounded-lg px-3 py-2 mt-1" oninput="calcHPP()"/>
+          </div>
+        </div>
+
+        <div class="bg-slate-50 rounded-lg p-3 space-y-2 text-sm border">
+          <div class="flex justify-between"><span class="text-slate-600">Total Bahan</span><b id="hpp_sum_material">Rp 0</b></div>
+          <div class="flex justify-between"><span class="text-slate-600">Total Overhead</span><b id="hpp_sum_overhead">Rp 0</b></div>
+          <div class="flex justify-between border-t pt-2"><span class="font-semibold">Total Biaya</span><b id="hpp_sum_total">Rp 0</b></div>
+        </div>
+
+        <div class="bg-brand-50 rounded-lg p-3 mt-3 border border-brand-100">
+          <div class="text-xs text-brand-700 font-medium">💰 HPP per Unit</div>
+          <div id="hpp_per_unit" class="text-2xl font-bold text-brand-700 mt-1">Rp 0</div>
+        </div>
+
+        <div class="bg-emerald-50 rounded-lg p-3 mt-3 border border-emerald-100">
+          <div class="text-xs text-emerald-700 font-medium">🏷️ Harga Jual Disarankan</div>
+          <div id="hpp_sell" class="text-2xl font-bold text-emerald-700 mt-1">Rp 0</div>
+          <div id="hpp_profit" class="text-xs text-emerald-600 mt-1">Laba per unit: Rp 0</div>
+        </div>
+
+        <button onclick="saveHPPAsProduct()" class="w-full mt-4 bg-brand-600 text-white py-2.5 rounded-lg text-sm hover:bg-brand-700 font-medium">💾 Simpan sebagai Barang</button>
+      </div>
+    </div>
+  </div>`;
+
+VIEWS.hpp_bind = () => {
+  const ingBox = document.getElementById('hpp_ingredients');
+  const useBox = document.getElementById('hpp_usages');
+  const ovBox = document.getElementById('hpp_overhead');
+  if(!ingBox) return;
+  ingBox.innerHTML = '';
+  useBox.innerHTML = '';
+  ovBox.innerHTML = '';
+  hppAddIngredient();
+  hppAddIngredient();
+  addHPPOverhead();
+  hppRefreshAll();
+};
+
+window.hppAddIngredient = (data = {}) => {
+  const box = document.getElementById('hpp_ingredients');
+  if(!box) return;
+  const { name='', price='', unit='kg', packSize=1 } = data;
+  const div = document.createElement('div');
+  div.className = 'hpp-ing-row flex flex-wrap gap-2 items-center border rounded-lg p-2 bg-slate-50';
+  div.innerHTML = `
+    <input class="hpp-ing-name flex-1 min-w-[140px] border rounded px-2 py-1.5 text-sm bg-white" placeholder="Nama bahan" value="${esc(name)}"/>
+    <div class="flex items-center border rounded bg-white overflow-hidden">
+      <span class="px-2 text-xs text-slate-500 bg-slate-100 py-1.5">Rp</span>
+      <input class="hpp-ing-price w-24 px-2 py-1.5 text-sm outline-none" type="number" placeholder="10000" value="${price}" min="0" step="any"/>
+      <span class="px-1 text-xs text-slate-400">/</span>
+      <select class="hpp-ing-unit px-1 py-1.5 text-sm outline-none bg-white">
+        ${['kg','gram','ons','liter','ml','pcs','pack'].map(u=>`<option value="${u}" ${u===unit?'selected':''}>${u}</option>`).join('')}
+      </select>
+    </div>
+    <div class="hpp-pack-info ${unit==='pack'?'flex':'hidden'} items-center gap-1 border rounded px-2 py-1.5 bg-white">
+      <span class="text-xs text-slate-500 whitespace-nowrap">isi</span>
+      <input class="hpp-ing-packsize w-14 text-sm outline-none text-center" type="number" placeholder="1" value="${packSize}" min="1"/>
+      <span class="text-xs text-slate-500 whitespace-nowrap">pcs</span>
+    </div>
+    <div class="hpp-ing-hint text-xs text-slate-500"></div>
+    <button class="text-red-500 hover:text-red-700 ml-auto px-2 text-base" title="Hapus">🗑️</button>
+  `;
+  box.appendChild(div);
+
+  const unitSel = div.querySelector('.hpp-ing-unit');
+  unitSel.addEventListener('change', () => {
+    const isPack = unitSel.value === 'pack';
+    const pi = div.querySelector('.hpp-pack-info');
+    pi.classList.toggle('hidden', !isPack);
+    pi.classList.toggle('flex', isPack);
+    hppRefreshAll();
+  });
+  div.querySelectorAll('input, select').forEach(el => {
+    el.addEventListener('input', hppRefreshAll);
+    el.addEventListener('change', hppRefreshAll);
+  });
+  div.querySelector('button').addEventListener('click', () => {
+    div.remove();
+    hppRefreshAll();
+  });
+  hppRefreshAll();
+};
+
+window.hppAddUsage = (data = {}) => {
+  const box = document.getElementById('hpp_usages');
+  if(!box) return;
+  const { ingName='', qty=100, unit='' } = data;
+  const div = document.createElement('div');
+  div.className = 'hpp-use-row flex flex-wrap gap-2 items-center border rounded-lg p-2 bg-slate-50';
+  div.innerHTML = `
+    <select class="hpp-use-ing flex-1 min-w-[140px] border rounded px-2 py-1.5 text-sm bg-white">
+      <option value="">-- Pilih Bahan --</option>
+    </select>
+    <div class="flex items-center border rounded bg-white overflow-hidden">
+      <input class="hpp-use-qty w-24 px-2 py-1.5 text-sm outline-none" type="number" placeholder="100" value="${qty}" min="0" step="any"/>
+      <select class="hpp-use-unit px-1 py-1.5 text-sm outline-none bg-white border-l"></select>
+    </div>
+    <div class="hpp-use-subtotal text-sm font-semibold text-brand-700 min-w-[80px] text-right">-</div>
+    <button class="text-red-500 hover:text-red-700 ml-auto px-2 text-base" title="Hapus">🗑️</button>
+  `;
+  box.appendChild(div);
+
+  div.querySelector('.hpp-use-ing').addEventListener('change', e => {
+    hppUpdateUsageUnitOptions(div, e.target.value);
+    hppRecalc();
+  });
+  div.querySelector('.hpp-use-qty').addEventListener('input', hppRecalc);
+  div.querySelector('.hpp-use-unit').addEventListener('change', hppRecalc);
+  div.querySelector('button').addEventListener('click', () => {
+    div.remove();
+    hppRecalc();
+  });
+
+  hppRefreshIngredientDropdowns();
+  if(ingName){
+    const sel = div.querySelector('.hpp-use-ing');
+    if([...sel.options].some(o => o.value === ingName)){
+      sel.value = ingName;
+      hppUpdateUsageUnitOptions(div, ingName);
+      if(unit) div.querySelector('.hpp-use-unit').value = unit;
+    }
+  }
+  hppRecalc();
+};
+
+function getHPPIngredients(){
+  const rows = document.querySelectorAll('#hpp_ingredients .hpp-ing-row');
+  const list = [];
+  rows.forEach(r => {
+    const name = r.querySelector('.hpp-ing-name').value.trim();
+    const price = +r.querySelector('.hpp-ing-price').value || 0;
+    const unit = r.querySelector('.hpp-ing-unit').value;
+    const packSize = +r.querySelector('.hpp-ing-packsize')?.value || 1;
+    if(name) list.push({ name, price, unit, packSize });
+  });
+  return list;
+}
+
+function hppRefreshIngredientDropdowns(){
+  const ings = getHPPIngredients();
+
+  document.querySelectorAll('#hpp_usages .hpp-use-row').forEach(row => {
+    const sel = row.querySelector('.hpp-use-ing');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">-- Pilih Bahan --</option>' +
+      ings.map(i => `<option value="${esc(i.name)}">${esc(i.name)}</option>`).join('');
+    if(cur && ings.some(i => i.name === cur)) sel.value = cur;
+    else {
+      sel.value = '';
+      hppUpdateUsageUnitOptions(row, '');
+    }
+  });
+
+  document.querySelectorAll('#hpp_ingredients .hpp-ing-row').forEach(row => {
+    const name = row.querySelector('.hpp-ing-name').value.trim();
+    const price = +row.querySelector('.hpp-ing-price').value || 0;
+    const unit = row.querySelector('.hpp-ing-unit').value;
+    const packSize = +row.querySelector('.hpp-ing-packsize')?.value || 1;
+    const hintEl = row.querySelector('.hpp-ing-hint');
+    if(hintEl && name && price > 0){
+      const factor = getUnitFactor(unit, packSize);
+      const perBase = price / factor;
+      const baseName = getBaseUnitName(unit);
+      let hint = `= ${rp(Math.round(perBase))} / ${baseName}`;
+      if(unit === 'pack') hint = `1 pack = ${packSize} pcs → ${hint}`;
+      hintEl.textContent = hint;
+    } else if(hintEl){
+      hintEl.textContent = '';
+    }
+  });
+}
+
+function hppUpdateUsageUnitOptions(row, ingName){
+  const ings = getHPPIngredients();
+  const ing = ings.find(i => i.name === ingName);
+  const sel = row.querySelector('.hpp-use-unit');
+  const cur = sel.value;
+  if(!ing){
+    sel.innerHTML = '<option value="">-</option>';
+    return;
+  }
+  const opts = getCompatibleUnits(ing.unit);
+  sel.innerHTML = opts.map(u => `<option value="${u}">${u}</option>`).join('');
+  if(opts.includes(cur)) sel.value = cur;
+  else sel.value = opts.includes(ing.unit) ? ing.unit : opts[opts.length-1];
+}
+
+function hppCalcSubtotal(ing, qty, unit){
+  if(!ing || !qty || !unit) return 0;
+  const ingFactor = getUnitFactor(ing.unit, ing.packSize);
+  const useFactor = getUnitFactor(unit, ing.packSize);
+  const basePrice = ing.price / ingFactor;
+  return qty * useFactor * basePrice;
+}
+
+function hppRecalc(){
+  const ings = getHPPIngredients();
+  document.querySelectorAll('#hpp_usages .hpp-use-row').forEach(row => {
+    const name = row.querySelector('.hpp-use-ing').value;
+    const qty = +row.querySelector('.hpp-use-qty').value || 0;
+    const unit = row.querySelector('.hpp-use-unit').value;
+    const ing = ings.find(i => i.name === name);
+    const sub = hppCalcSubtotal(ing, qty, unit);
+    row.querySelector('.hpp-use-subtotal').textContent = sub > 0 ? rp(Math.round(sub)) : '-';
+  });
+  calcHPP();
+}
+
+window.hppRefreshAll = () => {
+  hppRefreshIngredientDropdowns();
+  hppRecalc();
+};
+
+window.addHPPOverhead = (name='', amount=0) => {
+  const box = document.getElementById('hpp_overhead');
+  if(!box) return;
+  const div = document.createElement('div');
+  div.className = 'hpp-ov-row flex flex-wrap gap-2 items-center border rounded-lg p-2 bg-slate-50';
+  div.innerHTML = `
+    <input class="hpp-o-name flex-1 min-w-[140px] border rounded px-2 py-1.5 text-sm bg-white" placeholder="Nama biaya (mis: gas, listrik)" value="${esc(name)}"/>
+    <div class="flex items-center border rounded bg-white overflow-hidden">
+      <span class="px-2 text-xs text-slate-500 bg-slate-100 py-1.5">Rp</span>
+      <input class="hpp-o-amount w-28 px-2 py-1.5 text-sm outline-none" type="number" placeholder="0" value="${amount}" min="0" step="any"/>
+    </div>
+    <button class="text-red-500 hover:text-red-700 ml-auto px-2 text-base" title="Hapus">🗑️</button>
+  `;
+  box.appendChild(div);
+  div.querySelectorAll('input').forEach(i => i.addEventListener('input', calcHPP));
+  div.querySelector('button').addEventListener('click', () => {
+    div.remove();
+    calcHPP();
+  });
+};
+
+window.calcHPP = () => {
+  const ings = getHPPIngredients();
+  let materialTotal = 0;
+  document.querySelectorAll('#hpp_usages .hpp-use-row').forEach(row => {
+    const name = row.querySelector('.hpp-use-ing').value;
+    const qty = +row.querySelector('.hpp-use-qty').value || 0;
+    const unit = row.querySelector('.hpp-use-unit').value;
+    const ing = ings.find(i => i.name === name);
+    materialTotal += hppCalcSubtotal(ing, qty, unit);
+  });
+
+  let overheadTotal = 0;
+  document.querySelectorAll('#hpp_overhead .hpp-ov-row').forEach(r => {
+    overheadTotal += +r.querySelector('.hpp-o-amount').value || 0;
+  });
+
+  const totalCost = materialTotal + overheadTotal;
+  const batchEl = document.getElementById('hpp_batch');
+  const marginEl = document.getElementById('hpp_margin');
+  if(!batchEl || !marginEl) return;
+  const batch = Math.max(1, +batchEl.value || 1);
+  const margin = +marginEl.value || 0;
+  const perUnit = totalCost / batch;
+  const sellPrice = perUnit * (1 + margin/100);
+  const profit = sellPrice - perUnit;
+
+  document.getElementById('hpp_sum_material').textContent = rp(Math.round(materialTotal));
+  document.getElementById('hpp_sum_overhead').textContent = rp(Math.round(overheadTotal));
+  document.getElementById('hpp_sum_total').textContent = rp(Math.round(totalCost));
+  document.getElementById('hpp_per_unit').textContent = rp(Math.round(perUnit));
+  document.getElementById('hpp_sell').textContent = rp(Math.round(sellPrice));
+  document.getElementById('hpp_profit').textContent = `Laba per unit: ${rp(Math.round(profit))} (${margin}%)`;
+};
+
+window.resetHPPCalc = () => {
+  VIEWS.hpp_bind();
+  document.getElementById('hpp_name').value = '';
+  document.getElementById('hpp_batch').value = 1;
+  document.getElementById('hpp_margin').value = 30;
+};
+
+window.saveHPPAsProduct = () => {
+  const ings = getHPPIngredients();
+  let materialTotal = 0;
+  document.querySelectorAll('#hpp_usages .hpp-use-row').forEach(row => {
+    const name = row.querySelector('.hpp-use-ing').value;
+    const qty = +row.querySelector('.hpp-use-qty').value || 0;
+    const unit = row.querySelector('.hpp-use-unit').value;
+    const ing = ings.find(i => i.name === name);
+    materialTotal += hppCalcSubtotal(ing, qty, unit);
+  });
+  let overheadTotal = 0;
+  document.querySelectorAll('#hpp_overhead .hpp-ov-row').forEach(r => {
+    overheadTotal += +r.querySelector('.hpp-o-amount').value || 0;
+  });
+
+  const totalCost = materialTotal + overheadTotal;
+  const batch = Math.max(1, +document.getElementById('hpp_batch').value || 1);
+  const margin = +document.getElementById('hpp_margin').value || 0;
+  const perUnit = totalCost / batch;
+  const sellPrice = perUnit * (1 + margin/100);
+  const name = document.getElementById('hpp_name').value.trim();
+
+  if(totalCost <= 0){ alert('Total biaya masih 0. Isi bahan/overhead dulu.'); return; }
+
+  const suggestedName = name || 'Produk HPP';
+
+  openModal('Simpan sebagai Barang', `
+    <div class="space-y-3">
+      <div><label class="text-xs text-slate-500">Nama Barang *</label>
+        <input id="sp_name" value="${esc(suggestedName)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-500">SKU</label>
+          <input id="sp_sku" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Kategori</label>
+          <input id="sp_cat" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Satuan</label>
+          <input id="sp_unit" value="pcs" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Stok Awal</label>
+          <input id="sp_stock" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Harga Beli (HPP)</label>
+          <input id="sp_buy" type="number" value="${Math.round(perUnit)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Harga Jual</label>
+          <input id="sp_sell" type="number" value="${Math.round(sellPrice)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      </div>
+      <div class="bg-slate-50 rounded-lg p-3 text-xs text-slate-600">
+        HPP/unit: <b>${rp(Math.round(perUnit))}</b> · Harga jual: <b>${rp(Math.round(sellPrice))}</b> · Margin: <b>${margin}%</b>
+      </div>
+    </div>`, ()=>{
+    const nm = document.getElementById('sp_name').value.trim();
+    if(!nm){ alert('Nama wajib diisi'); return false; }
+    const stock = +document.getElementById('sp_stock').value||0;
+    const buyPrice = +document.getElementById('sp_buy').value||0;
+    const newP = {
+      id: uid('p_'),
+      name: nm,
+      sku: document.getElementById('sp_sku').value.trim(),
+      category: document.getElementById('sp_cat').value.trim(),
+      unit: document.getElementById('sp_unit').value.trim()||'pcs',
+      minStock: 0,
+      buyPrice,
+      sellPrice: +document.getElementById('sp_sell').value||0
+    };
+    DB.products.push(newP);
+    if(stock>0){
+      DB.stockMoves.push({
+        id: uid('m_'), date: new Date().toISOString(),
+        productId: newP.id, type:'in', qty:stock, cost:buyPrice,
+        note:'Stok awal dari kalkulator HPP', ref:''
+      });
+    }
+    saveDB();
+    alert('Barang berhasil disimpan!');
+    navigate('products');
+  });
+};
+
+/* === Suppliers === */
+VIEWS.suppliers = () => `
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-xl font-bold">Supplier</h2>
+    <button onclick="openContactForm('supplier')" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Tambah Supplier</button>
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600"><tr>
+        <th class="text-left p-3">Nama</th><th class="text-left p-3">Telepon</th><th class="text-left p-3">Alamat</th><th class="text-right p-3">Aksi</th></tr></thead>
+      <tbody>
+        ${DB.suppliers.length ? DB.suppliers.map(s=>`
+          <tr class="border-t hover:bg-slate-50">
+            <td class="p-3 font-medium">${esc(s.name)}</td>
+            <td class="p-3">${esc(s.phone||'-')}</td>
+            <td class="p-3">${esc(s.address||'-')}</td>
+            <td class="p-3 text-right">
+              <button onclick="openContactForm('supplier','${s.id}')" class="text-brand-600 text-xs mr-2">Edit</button>
+              <button onclick="deleteContact('suppliers','${s.id}')" class="text-red-600 text-xs">Hapus</button>
+            </td></tr>`).join('') : `<tr><td colspan="4" class="p-8 text-center text-slate-400">Belum ada supplier</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+
+VIEWS.customers = () => `
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-xl font-bold">Pelanggan</h2>
+    <button onclick="openContactForm('customer')" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Tambah Pelanggan</button>
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600"><tr>
+        <th class="text-left p-3">Nama</th><th class="text-left p-3">Telepon</th><th class="text-left p-3">Alamat</th><th class="text-right p-3">Aksi</th></tr></thead>
+      <tbody>
+        ${DB.customers.length ? DB.customers.map(s=>`
+          <tr class="border-t hover:bg-slate-50">
+            <td class="p-3 font-medium">${esc(s.name)}</td>
+            <td class="p-3">${esc(s.phone||'-')}</td>
+            <td class="p-3">${esc(s.address||'-')}</td>
+            <td class="p-3 text-right">
+              <button onclick="openContactForm('customer','${s.id}')" class="text-brand-600 text-xs mr-2">Edit</button>
+              <button onclick="deleteContact('customers','${s.id}')" class="text-red-600 text-xs">Hapus</button>
+            </td></tr>`).join('') : `<tr><td colspan="4" class="p-8 text-center text-slate-400">Belum ada pelanggan</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+
+window.openContactForm = (kind, id) => {
+  const arr = kind==='supplier'? DB.suppliers : DB.customers;
+  const item = id ? arr.find(x=>x.id===id) : {name:'',phone:'',address:''};
+  const label = kind==='supplier'?'Supplier':'Pelanggan';
+  openModal((id?'Edit ':'Tambah ')+label, `
+    <div class="space-y-3">
+      <div><label class="text-xs text-slate-500">Nama *</label>
+        <input id="c_name" value="${esc(item.name)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Telepon</label>
+        <input id="c_phone" value="${esc(item.phone)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Alamat</label>
+        <input id="c_addr" value="${esc(item.address)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+    </div>`, ()=>{
+    const name = document.getElementById('c_name').value.trim();
+    if(!name){alert('Nama wajib diisi');return false;}
+    const data = {name, phone:document.getElementById('c_phone').value.trim(), address:document.getElementById('c_addr').value.trim()};
+    if(id){ Object.assign(arr.find(x=>x.id===id), data); }
+    else { arr.push({id:uid(kind==='supplier'?'s_':'c_'), ...data}); }
+    saveDB(); navigate(kind==='supplier'?'suppliers':'customers');
+  });
+};
+window.deleteContact = (arrName, id) => {
+  if(!confirm('Hapus data ini?')) return;
+  DB[arrName] = DB[arrName].filter(x=>x.id!==id);
+  saveDB(); navigate(arrName==='suppliers'?'suppliers':'customers');
+};
+
+/* === Purchases === */
+VIEWS.purchases = () => `
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-xl font-bold">Pembelian</h2>
+    <button onclick="openPurchaseForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Pembelian Baru</button>
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600"><tr>
+        <th class="text-left p-3">No</th><th class="text-left p-3">Tanggal</th><th class="text-left p-3">Supplier</th>
+        <th class="text-right p-3">Total</th><th class="text-right p-3">Dibayar</th><th class="text-right p-3">Sisa</th>
+        <th class="text-right p-3">Aksi</th></tr></thead>
+      <tbody>
+        ${DB.purchases.length ? DB.purchases.slice().reverse().map(p=>{
+          const sisa = p.total - p.paid;
+          return `<tr class="border-t hover:bg-slate-50">
+            <td class="p-3 font-mono text-xs">${p.id.slice(-6)}</td>
+            <td class="p-3">${fmtDate(p.date)}</td>
+            <td class="p-3">${esc(p.supplierName||'-')}</td>
+            <td class="p-3 text-right">${rp(p.total)}</td>
+            <td class="p-3 text-right">${rp(p.paid)}</td>
+            <td class="p-3 text-right ${sisa>0?'text-red-600 font-semibold':''}">${rp(sisa)}</td>
+            <td class="p-3 text-right whitespace-nowrap">
+              <button onclick="printPurchase('${p.id}')" class="text-slate-600 text-xs mr-2">🖨️</button>
+              ${sisa>0?`<button onclick="openPayPurchase('${p.id}')" class="text-brand-600 text-xs">Bayar</button>`:''}
+            </td></tr>`;
+        }).join('') : `<tr><td colspan="7" class="p-8 text-center text-slate-400">Belum ada pembelian</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+
+window.openPurchaseForm = () => {
+  const supplierOpts = '<option value="">-- Pilih Supplier --</option>' + DB.suppliers.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  openModal('Pembelian Baru', `
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-500">Tanggal</label>
+          <input id="pu_date" type="date" value="${todayStr()}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Supplier</label>
+          <select id="pu_supplier" class="w-full border rounded-lg px-3 py-2 mt-1">${supplierOpts}</select></div>
+      </div>
+      <div class="border rounded-lg p-3 bg-slate-50">
+        <div class="font-semibold text-sm mb-2">Item</div>
+        <div id="pu_items" class="space-y-2"></div>
+        <button onclick="addPurchaseRow()" class="mt-2 text-sm text-brand-600 hover:underline">+ Tambah Item</button>
+      </div>
+      <div class="flex justify-between items-center pt-2">
+        <span class="text-sm font-semibold">Total</span>
+        <span id="pu_total" class="font-bold text-lg">Rp 0</span>
+      </div>
+      <div><label class="text-xs text-slate-500">Jumlah Dibayar</label>
+        <input id="pu_paid" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1"/>
+        <p class="text-xs text-slate-400 mt-1">Sisa akan dicatat sebagai hutang.</p></div>
+    </div>`, ()=>{
+    const items = collectPurchaseItems();
+    if(!items.length){alert('Tambahkan minimal 1 item');return false;}
+    const total = items.reduce((a,i)=>a+i.qty*i.cost,0);
+    const paid = +document.getElementById('pu_paid').value||0;
+    const supplierId = document.getElementById('pu_supplier').value;
+    const supplier = DB.suppliers.find(s=>s.id===supplierId);
+    const date = document.getElementById('pu_date').value || todayStr();
+    const purch = {
+      id: uid('pu_'), date:new Date(date).toISOString(),
+      supplierId, supplierName: supplier?.name||'Umum',
+      items, total, paid: Math.min(paid,total)
+    };
+    DB.purchases.push(purch);
+    items.forEach(it=>{
+      DB.stockMoves.push({id:uid('m_'),date:purch.date,productId:it.productId,type:'in',qty:it.qty,cost:it.cost,note:'Pembelian',ref:purch.id});
+    });
+    if(purch.paid>0) DB.cash.push({id:uid('c_'),date:purch.date,type:'out',category:'Pembelian',amount:purch.paid,note:'Pembayaran pembelian '+purch.id.slice(-6),ref:purch.id});
+    saveDB(); navigate('purchases');
+  });
+  addPurchaseRow();
+};
+window.addPurchaseRow = () => {
+  const box = document.getElementById('pu_items');
+  const productOpts = '<option value="">-- Pilih Barang --</option>' + DB.products.map(p=>`<option value="${p.id}" data-buy="${p.buyPrice}">${esc(p.name)}</option>`).join('');
+  const div = document.createElement('div');
+  div.className = 'grid grid-cols-12 gap-2 items-center';
+  div.innerHTML = `
+    <select class="pu-prod col-span-5 border rounded px-2 py-1.5 text-sm">${productOpts}</select>
+    <input type="number" class="pu-qty col-span-2 border rounded px-2 py-1.5 text-sm" placeholder="Qty" value="1"/>
+    <input type="number" class="pu-cost col-span-3 border rounded px-2 py-1.5 text-sm" placeholder="Harga"/>
+    <button class="col-span-2 text-red-600 text-sm" onclick="this.parentElement.remove();recalcPurchase()">Hapus</button>`;
+  box.appendChild(div);
+  div.querySelector('.pu-prod').onchange = e => {
+    const opt = e.target.selectedOptions[0];
+    div.querySelector('.pu-cost').value = opt?.dataset.buy||0;
+    recalcPurchase();
+  };
+  div.querySelectorAll('input').forEach(inp=>inp.oninput = recalcPurchase);
+};
+function recalcPurchase(){
+  let total = 0;
+  document.querySelectorAll('#pu_items > div').forEach(r=>{
+    const q = +r.querySelector('.pu-qty').value||0;
+    const c = +r.querySelector('.pu-cost').value||0;
+    total += q*c;
+  });
+  document.getElementById('pu_total').textContent = rp(total);
+}
+function collectPurchaseItems(){
+  const items = [];
+  document.querySelectorAll('#pu_items > div').forEach(r=>{
+    const pid = r.querySelector('.pu-prod').value;
+    const qty = +r.querySelector('.pu-qty').value||0;
+    const cost = +r.querySelector('.pu-cost').value||0;
+    if(pid && qty>0){
+      const p = findProduct(pid);
+      items.push({productId:pid, name:p?.name||'', qty, cost});
+    }
+  });
+  return items;
+}
+
+window.openPayPurchase = (id) => {
+  const p = DB.purchases.find(x=>x.id===id);
+  const sisa = p.total - p.paid;
+  openModal('Bayar Hutang', `
+    <p class="text-sm mb-2">Sisa hutang: <b>${rp(sisa)}</b></p>
+    <label class="text-xs text-slate-500">Jumlah Bayar</label>
+    <input id="pay_amt" type="number" value="${sisa}" class="w-full border rounded-lg px-3 py-2 mt-1"/>`, ()=>{
+    const amt = +document.getElementById('pay_amt').value||0;
+    if(amt<=0||amt>sisa){alert('Jumlah tidak valid');return false;}
+    p.paid += amt;
+    DB.cash.push({id:uid('c_'),date:new Date().toISOString(),type:'out',category:'Bayar Hutang',amount:amt,note:'Pembayaran hutang '+p.id.slice(-6),ref:p.id});
+    saveDB(); navigate('purchases');
+  });
+};
+
+/* === Sales === */
+VIEWS.sales = () => `
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-xl font-bold">Penjualan</h2>
+    <button onclick="openSaleForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Penjualan Baru</button>
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600"><tr>
+        <th class="text-left p-3">No</th><th class="text-left p-3">Tanggal</th><th class="text-left p-3">Pelanggan</th>
+        <th class="text-right p-3">Total</th><th class="text-right p-3">Dibayar</th><th class="text-right p-3">Sisa</th>
+        <th class="text-right p-3">Aksi</th></tr></thead>
+      <tbody>
+        ${DB.sales.length ? DB.sales.slice().reverse().map(s=>{
+          const sisa = s.total - s.paid;
+          return `<tr class="border-t hover:bg-slate-50">
+            <td class="p-3 font-mono text-xs">${s.id.slice(-6)}</td>
+            <td class="p-3">${fmtDate(s.date)}</td>
+            <td class="p-3">${esc(s.customerName||'Umum')}</td>
+            <td class="p-3 text-right">${rp(s.total)}</td>
+            <td class="p-3 text-right">${rp(s.paid)}</td>
+            <td class="p-3 text-right ${sisa>0?'text-red-600 font-semibold':''}">${rp(sisa)}</td>
+            <td class="p-3 text-right whitespace-nowrap">
+              <button onclick="printSale('${s.id}')" class="text-slate-600 text-xs mr-2">🖨️</button>
+              ${sisa>0?`<button onclick="openPaySale('${s.id}')" class="text-brand-600 text-xs">Bayar</button>`:''}
+            </td></tr>`;
+        }).join('') : `<tr><td colspan="7" class="p-8 text-center text-slate-400">Belum ada penjualan</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+
+window.openSaleForm = () => {
+  if(!DB.products.length){alert('Tambahkan barang terlebih dahulu');return;}
+  const custOpts = '<option value="">Pelanggan Umum</option>' + DB.customers.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  openModal('Penjualan Baru', `
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-500">Tanggal</label>
+          <input id="sa_date" type="date" value="${todayStr()}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Pelanggan</label>
+          <select id="sa_cust" class="w-full border rounded-lg px-3 py-2 mt-1">${custOpts}</select></div>
+      </div>
+      <div class="border rounded-lg p-3 bg-slate-50">
+        <div class="font-semibold text-sm mb-2">Item</div>
+        <div id="sa_items" class="space-y-2"></div>
+        <button onclick="addSaleRow()" class="mt-2 text-sm text-brand-600 hover:underline">+ Tambah Item</button>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-500">Diskon (Rp)</label>
+          <input id="sa_disc" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1" oninput="recalcSale()"/></div>
+        <div><label class="text-xs text-slate-500">Dibayar (Rp)</label>
+          <input id="sa_paid" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      </div>
+      <div class="bg-brand-50 rounded-lg p-3 flex justify-between items-center">
+        <span class="text-sm font-semibold">Total</span>
+        <span id="sa_total" class="font-bold text-lg text-brand-700">Rp 0</span>
+      </div>
+      <div id="sa_hpp" class="text-xs text-slate-500"></div>
+      <p class="text-xs text-slate-400">Sisa pembayaran akan dicatat sebagai piutang.</p>
+    </div>`, ()=>{
+    const items = collectSaleItems();
+    if(!items.length){alert('Tambahkan minimal 1 item');return false;}
+    const subtotal = items.reduce((a,i)=>a+i.qty*i.price,0);
+    const disc = +document.getElementById('sa_disc').value||0;
+    const total = subtotal - disc;
+    const paid = +document.getElementById('sa_paid').value||0;
+    if(paid>total){alert('Jumlah bayar melebihi total');return false;}
+    const custId = document.getElementById('sa_cust').value;
+    const cust = DB.customers.find(c=>c.id===custId);
+    const date = document.getElementById('sa_date').value||todayStr();
+    const sale = {
+      id: uid('sa_'), date:new Date(date).toISOString(),
+      customerId:custId, customerName:cust?.name||'Umum',
+      items, subtotal, discount:disc, total, paid:Math.min(paid,total)
+    };
+    DB.sales.push(sale);
+    items.forEach(it=>{
+      DB.stockMoves.push({id:uid('m_'),date:sale.date,productId:it.productId,type:'out',qty:it.qty,cost:it.cost,note:'Penjualan',ref:sale.id});
+    });
+    if(sale.paid>0) DB.cash.push({id:uid('c_'),date:sale.date,type:'in',category:'Penjualan',amount:sale.paid,note:'Pembayaran penjualan '+sale.id.slice(-6),ref:sale.id});
+    saveDB();
+    const printNow = confirm('Transaksi tersimpan. Cetak struk sekarang?');
+    navigate('sales');
+    if(printNow) printSale(sale.id);
+  });
+  addSaleRow();
+};
+window.addSaleRow = () => {
+  const box = document.getElementById('sa_items');
+  const productOpts = '<option value="">-- Pilih Barang --</option>' + DB.products.map(p=>`<option value="${p.id}" data-price="${p.sellPrice}" data-stock="${productStock(p.id)}">${esc(p.name)} (stok ${productStock(p.id)})</option>`).join('');
+  const div = document.createElement('div');
+  div.className = 'grid grid-cols-12 gap-2 items-center';
+  div.innerHTML = `
+    <select class="sa-prod col-span-5 border rounded px-2 py-1.5 text-sm">${productOpts}</select>
+    <input type="number" class="sa-qty col-span-2 border rounded px-2 py-1.5 text-sm" placeholder="Qty" value="1" min="1"/>
+    <input type="number" class="sa-price col-span-3 border rounded px-2 py-1.5 text-sm" placeholder="Harga"/>
+    <button class="col-span-2 text-red-600 text-sm" onclick="this.parentElement.remove();recalcSale()">Hapus</button>`;
+  box.appendChild(div);
+  div.querySelector('.sa-prod').onchange = e => {
+    const opt = e.target.selectedOptions[0];
+    div.querySelector('.sa-price').value = opt?.dataset.price||0;
+    recalcSale();
+  };
+  div.querySelectorAll('input').forEach(inp=>inp.oninput = recalcSale);
+};
+function recalcSale(){
+  let sub = 0, hpp = 0;
+  document.querySelectorAll('#sa_items > div').forEach(r=>{
+    const pid = r.querySelector('.sa-prod').value;
+    const q = +r.querySelector('.sa-qty').value||0;
+    const p = +r.querySelector('.sa-price').value||0;
+    sub += q*p;
+    if(pid) hpp += q*productAvgCost(pid);
+  });
+  const disc = +document.getElementById('sa_disc')?.value||0;
+  const total = sub - disc;
+  const totalEl = document.getElementById('sa_total');
+  if(totalEl) totalEl.textContent = rp(total);
+  const hppEl = document.getElementById('sa_hpp');
+  if(hppEl) hppEl.textContent = `Estimasi HPP: ${rp(hpp)} • Laba kotor: ${rp(total-hpp)}`;
+}
+function collectSaleItems(){
+  const items = [];
+  document.querySelectorAll('#sa_items > div').forEach(r=>{
+    const pid = r.querySelector('.sa-prod').value;
+    const qty = +r.querySelector('.sa-qty').value||0;
+    const price = +r.querySelector('.sa-price').value||0;
+    if(pid && qty>0){
+      const p = findProduct(pid);
+      items.push({productId:pid, name:p?.name||'', qty, price, cost:productAvgCost(pid)});
+    }
+  });
+  return items;
+}
+
+window.openPaySale = (id) => {
+  const s = DB.sales.find(x=>x.id===id);
+  const sisa = s.total - s.paid;
+  openModal('Terima Pembayaran', `
+    <p class="text-sm mb-2">Sisa tagihan: <b>${rp(sisa)}</b></p>
+    <label class="text-xs text-slate-500">Jumlah Bayar</label>
+    <input id="pay_amt" type="number" value="${sisa}" class="w-full border rounded-lg px-3 py-2 mt-1"/>`, ()=>{
+    const amt = +document.getElementById('pay_amt').value||0;
+    if(amt<=0||amt>sisa){alert('Jumlah tidak valid');return false;}
+    s.paid += amt;
+    DB.cash.push({id:uid('c_'),date:new Date().toISOString(),type:'in',category:'Terima Piutang',amount:amt,note:'Penerimaan piutang '+s.id.slice(-6),ref:s.id});
+    saveDB(); navigate('sales');
+  });
+};
+
+/* === Cash === */
+VIEWS.cash = () => {
+  const balance = DB.cash.reduce((a,c)=>a+(c.type==='in'?c.amount:-c.amount),0);
+  const inflow = DB.cash.filter(c=>c.type==='in').reduce((a,c)=>a+c.amount,0);
+  const outflow = DB.cash.filter(c=>c.type==='out').reduce((a,c)=>a+c.amount,0);
+  return `
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-xl font-bold">Kas & Bank</h2>
+    <button onclick="openCashForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Transaksi Manual</button>
+  </div>
+  <div class="grid grid-cols-3 gap-4 mb-4">
+    ${statCard('Total Masuk', rp(inflow),'⬇️','bg-emerald-50 text-emerald-700')}
+    ${statCard('Total Keluar', rp(outflow),'⬆️','bg-red-50 text-red-700')}
+    ${statCard('Saldo', rp(balance),'💵','bg-brand-50 text-brand-700')}
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600"><tr>
+        <th class="text-left p-3">Tanggal</th><th class="text-left p-3">Kategori</th>
+        <th class="text-left p-3">Catatan</th><th class="text-right p-3">Masuk</th>
+        <th class="text-right p-3">Keluar</th></tr></thead>
+      <tbody>
+        ${DB.cash.length ? DB.cash.slice().reverse().map(c=>`
+          <tr class="border-t hover:bg-slate-50">
+            <td class="p-3">${fmtDate(c.date)}</td>
+            <td class="p-3">${esc(c.category||'-')}</td>
+            <td class="p-3 text-slate-500">${esc(c.note||'')}</td>
+            <td class="p-3 text-right text-emerald-700">${c.type==='in'?rp(c.amount):'-'}</td>
+            <td class="p-3 text-right text-red-700">${c.type==='out'?rp(c.amount):'-'}</td>
+          </tr>`).join('') : `<tr><td colspan="5" class="p-8 text-center text-slate-400">Belum ada transaksi kas</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+};
+window.openCashForm = () => {
+  openModal('Transaksi Kas', `
+    <div class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="text-xs text-slate-500">Tanggal</label>
+          <input id="c_date" type="date" value="${todayStr()}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Jenis</label>
+          <select id="c_type" class="w-full border rounded-lg px-3 py-2 mt-1">
+            <option value="in">Uang Masuk</option><option value="out">Uang Keluar</option></select></div>
+      </div>
+      <div><label class="text-xs text-slate-500">Kategori</label>
+        <input id="c_cat" placeholder="cth: Operasional, Gaji, Modal" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Jumlah (Rp)</label>
+        <input id="c_amount" type="number" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Catatan</label>
+        <input id="c_note" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+    </div>`, ()=>{
+    const amount = +document.getElementById('c_amount').value||0;
+    if(amount<=0){alert('Jumlah harus > 0');return false;}
+    const date = document.getElementById('c_date').value||todayStr();
+    DB.cash.push({
+      id: uid('c_'), date:new Date(date).toISOString(),
+      type: document.getElementById('c_type').value,
+      category: document.getElementById('c_cat').value.trim()||'Lainnya',
+      amount, note:document.getElementById('c_note').value.trim()
+    });
+    saveDB(); navigate('cash');
+  });
+};
+
+/* === Debts === */
+VIEWS.debts = () => {
+  const unpaid = DB.purchases.filter(p=>p.paid<p.total);
+  const total = unpaid.reduce((a,p)=>a+(p.total-p.paid),0);
+  return `
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-xl font-bold">Hutang (ke Supplier)</h2>
+    <div class="text-sm text-slate-500">Total: <b class="text-red-600">${rp(total)}</b></div>
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600"><tr>
+        <th class="text-left p-3">Tanggal</th><th class="text-left p-3">Supplier</th>
+        <th class="text-right p-3">Total</th><th class="text-right p-3">Dibayar</th>
+        <th class="text-right p-3">Sisa</th><th class="text-right p-3">Aksi</th></tr></thead>
+      <tbody>
+        ${unpaid.length ? unpaid.map(p=>`
+          <tr class="border-t hover:bg-slate-50">
+            <td class="p-3">${fmtDate(p.date)}</td>
+            <td class="p-3">${esc(p.supplierName)}</td>
+            <td class="p-3 text-right">${rp(p.total)}</td>
+            <td class="p-3 text-right">${rp(p.paid)}</td>
+            <td class="p-3 text-right text-red-600 font-semibold">${rp(p.total-p.paid)}</td>
+            <td class="p-3 text-right"><button onclick="openPayPurchase('${p.id}')" class="text-brand-600 text-xs">Bayar</button></td>
+          </tr>`).join('') : `<tr><td colspan="6" class="p-8 text-center text-slate-400">Tidak ada hutang 🎉</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+};
+
+/* === Receivables === */
+VIEWS.receivables = () => {
+  const unpaid = DB.sales.filter(s=>s.paid<s.total);
+  const total = unpaid.reduce((a,s)=>a+(s.total-s.paid),0);
+  return `
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-xl font-bold">Piutang (dari Pelanggan)</h2>
+    <div class="text-sm text-slate-500">Total: <b class="text-emerald-600">${rp(total)}</b></div>
+  </div>
+  <div class="bg-white rounded-xl border overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-50 text-slate-600"><tr>
+        <th class="text-left p-3">Tanggal</th><th class="text-left p-3">Pelanggan</th>
+        <th class="text-right p-3">Total</th><th class="text-right p-3">Dibayar</th>
+        <th class="text-right p-3">Sisa</th><th class="text-right p-3">Aksi</th></tr></thead>
+      <tbody>
+        ${unpaid.length ? unpaid.map(s=>`
+          <tr class="border-t hover:bg-slate-50">
+            <td class="p-3">${fmtDate(s.date)}</td>
+            <td class="p-3">${esc(s.customerName)}</td>
+            <td class="p-3 text-right">${rp(s.total)}</td>
+            <td class="p-3 text-right">${rp(s.paid)}</td>
+            <td class="p-3 text-right text-emerald-600 font-semibold">${rp(s.total-s.paid)}</td>
+            <td class="p-3 text-right"><button onclick="openPaySale('${s.id}')" class="text-brand-600 text-xs">Terima</button></td>
+          </tr>`).join('') : `<tr><td colspan="6" class="p-8 text-center text-slate-400">Tidak ada piutang 🎉</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+};
+
+/* === Reports === */
+VIEWS.reports = () => {
+  const from = new Date(); from.setDate(from.getDate()-30);
+  return `
+  <h2 class="text-xl font-bold mb-4">Laporan</h2>
+  <div class="bg-white rounded-xl border p-4 mb-4">
+    <div class="grid md:grid-cols-4 gap-3">
+      <div><label class="text-xs text-slate-500">Dari Tanggal</label>
+        <input id="rp_from" type="date" value="${from.toISOString().slice(0,10)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div><label class="text-xs text-slate-500">Sampai Tanggal</label>
+        <input id="rp_to" type="date" value="${todayStr()}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+      <div class="md:col-span-2 flex items-end gap-2">
+        <button onclick="renderReportResult()" class="bg-brand-600 text-white px-4 py-2 rounded-lg text-sm">Tampilkan</button>
+        <button onclick="exportReportExcel()" class="border px-4 py-2 rounded-lg text-sm">📊 Export Excel</button>
+      </div>
+    </div>
+  </div>
+  <div id="rp_result"></div>`;
+};
+VIEWS.reports_bind = () => renderReportResult();
+
+function getReportData(from, to){
+  const f = new Date(from).getTime(), t = new Date(to).getTime()+86400000;
+  const sales = DB.sales.filter(s=>{const ts=new Date(s.date).getTime(); return ts>=f && ts<t;});
+  const purchases = DB.purchases.filter(p=>{const ts=new Date(p.date).getTime(); return ts>=f && ts<t;});
+  const cash = DB.cash.filter(c=>{const ts=new Date(c.date).getTime(); return ts>=f && ts<t;});
+  const revenue = sales.reduce((a,s)=>a+s.total,0);
+  const hpp = sales.reduce((a,s)=>a+s.items.reduce((b,i)=>b+i.qty*i.cost,0),0);
+  const profit = revenue - hpp;
+  const expenses = cash.filter(c=>c.type==='out').reduce((a,c)=>a+c.amount,0);
+  const income = cash.filter(c=>c.type==='in').reduce((a,c)=>a+c.amount,0);
+  const purchaseTotal = purchases.reduce((a,p)=>a+p.total,0);
+  return {sales, purchases, cash, revenue, hpp, profit, expenses, income, purchaseTotal};
+}
+window.renderReportResult = () => {
+  const from = document.getElementById('rp_from').value;
+  const to = document.getElementById('rp_to').value;
+  if(!from || !to){document.getElementById('rp_result').innerHTML='';return;}
+  const d = getReportData(from, to);
+  document.getElementById('rp_result').innerHTML = `
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      ${statCard('Penjualan', rp(d.revenue),'💰','bg-blue-50 text-blue-700')}
+      ${statCard('HPP', rp(d.hpp),'📦','bg-amber-50 text-amber-700')}
+      ${statCard('Laba Kotor', rp(d.profit),'📈','bg-emerald-50 text-emerald-700')}
+      ${statCard('Pembelian', rp(d.purchaseTotal),'🛍️','bg-purple-50 text-purple-700')}
+    </div>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="bg-white rounded-xl border p-4">
+        <h3 class="font-semibold mb-3">Arus Kas</h3>
+        <div class="space-y-2 text-sm">
+          <div class="flex justify-between"><span>Uang Masuk</span><b class="text-emerald-600">${rp(d.income)}</b></div>
+          <div class="flex justify-between"><span>Uang Keluar</span><b class="text-red-600">${rp(d.expenses)}</b></div>
+          <div class="flex justify-between border-t pt-2"><span class="font-semibold">Arus Kas Bersih</span>
+            <b class="${d.income-d.expenses>=0?'text-emerald-600':'text-red-600'}">${rp(d.income-d.expenses)}</b></div>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl border p-4">
+        <h3 class="font-semibold mb-3">Ringkasan</h3>
+        <div class="space-y-2 text-sm">
+          <div class="flex justify-between"><span>Jumlah Penjualan</span><b>${d.sales.length} transaksi</b></div>
+          <div class="flex justify-between"><span>Jumlah Pembelian</span><b>${d.purchases.length} transaksi</b></div>
+          <div class="flex justify-between border-t pt-2"><span class="font-semibold">Laba Bersih (estimasi)</span>
+            <b class="${d.profit-d.expenses>=0?'text-emerald-600':'text-red-600'}">${rp(d.profit-d.expenses)}</b></div>
+        </div>
+      </div>
+    </div>`;
+};
+
+window.exportReportExcel = () => {
+  const from = document.getElementById('rp_from').value;
+  const to = document.getElementById('rp_to').value;
+  const d = getReportData(from, to);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.sales.map(s=>({
+    Tanggal: fmtDate(s.date), Pelanggan:s.customerName, Subtotal:s.subtotal, Diskon:s.discount, Total:s.total, Dibayar:s.paid, Sisa:s.total-s.paid
+  }))), 'Penjualan');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.purchases.map(p=>({
+    Tanggal: fmtDate(p.date), Supplier:p.supplierName, Total:p.total, Dibayar:p.paid, Sisa:p.total-p.paid
+  }))), 'Pembelian');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.cash.map(c=>({
+    Tanggal: fmtDate(c.date), Tipe: c.type==='in'?'Masuk':'Keluar', Kategori:c.category, Jumlah:c.amount, Catatan:c.note
+  }))), 'Kas');
+  XLSX.writeFile(wb, `Laporan_${DB.business.name}_${from}_${to}.xlsx`);
+};
+
+/* === Settings === */
+VIEWS.settings = () => `
+  <h2 class="text-xl font-bold mb-4">Pengaturan</h2>
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="bg-white rounded-xl border p-4">
+      <h3 class="font-semibold mb-3">🏪 Info Usaha</h3>
+      <div class="space-y-3">
+        <div><label class="text-xs text-slate-500">Nama Usaha</label>
+          <input id="st_name" value="${esc(DB.business.name)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Pemilik</label>
+          <input id="st_owner" value="${esc(DB.business.owner||'')}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">Alamat</label>
+          <input id="st_addr" value="${esc(DB.business.address||'')}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <div><label class="text-xs text-slate-500">No. HP</label>
+          <input id="st_phone" value="${esc(DB.business.phone||'')}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <button onclick="saveBusinessInfo()" class="w-full bg-brand-600 text-white py-2 rounded-lg text-sm">Simpan Info</button>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl border p-4">
+      <h3 class="font-semibold mb-3">💾 Backup & Restore</h3>
+      <div class="space-y-2">
+        <button onclick="exportAllJSON()" class="w-full border py-2 rounded-lg text-sm hover:bg-slate-50">📥 Export JSON (backup penuh)</button>
+        <button onclick="exportAllExcel()" class="w-full border py-2 rounded-lg text-sm hover:bg-slate-50">📊 Export Excel (semua data)</button>
+        <label class="block w-full border py-2 rounded-lg text-sm text-center hover:bg-slate-50 cursor-pointer">
+          📤 Import dari JSON
+          <input type="file" accept=".json" class="hidden" onchange="importJSON(event)"/>
+        </label>
+      </div>
+
+      <h3 class="font-semibold mt-5 mb-2">🖨️ Printer</h3>
+      <div class="space-y-2">
+        <button onclick="connectBluetoothPrinter()" class="w-full border py-2 rounded-lg text-sm hover:bg-slate-50">🔵 Hubungkan Printer Bluetooth</button>
+        <button onclick="testPrint()" class="w-full border py-2 rounded-lg text-sm hover:bg-slate-50">🖨️ Test Print (browser)</button>
+        <p class="text-xs text-slate-500">Printer Bluetooth: gunakan Chrome/Edge (Android/desktop dengan dukungan Web Bluetooth).</p>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl border p-4 md:col-span-2">
+      <h3 class="font-semibold mb-3 text-red-600">⚠️ Zona Berbahaya</h3>
+      <div class="flex gap-2">
+        <button onclick="resetData()" class="border border-red-500 text-red-600 px-4 py-2 rounded-lg text-sm hover:bg-red-50">Reset Semua Data</button>
+        <button onclick="changeBusiness()" class="border px-4 py-2 rounded-lg text-sm hover:bg-slate-50">Ganti Usaha (mulai ulang onboarding)</button>
+      </div>
+    </div>
+  </div>`;
+
+window.saveBusinessInfo = () => {
+  DB.business.name = document.getElementById('st_name').value.trim() || DB.business.name;
+  DB.business.owner = document.getElementById('st_owner').value.trim();
+  DB.business.address = document.getElementById('st_addr').value.trim();
+  DB.business.phone = document.getElementById('st_phone').value.trim();
+  saveDB(); alert('Info tersimpan'); renderApp();
+};
+window.exportAllJSON = () => {
+  const blob = new Blob([JSON.stringify(DB, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `usahaku_backup_${DB.business.name}_${todayStr()}.json`;
+  a.click(); URL.revokeObjectURL(url);
+};
+window.importJSON = (e) => {
+  const f = e.target.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      if(!data.business){alert('File tidak valid');return;}
+      if(!confirm('Timpa data sekarang dengan file backup ini?')) return;
+      DB = data; saveDB(); renderApp();
+      alert('Data berhasil dipulihkan');
+    } catch(err){ alert('Gagal: '+err.message); }
+  };
+  r.readAsText(f);
+};
+window.exportAllExcel = () => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(DB.products.map(p=>({
+    SKU:p.sku, Nama:p.name, Kategori:p.category, Satuan:p.unit, HargaBeli:p.buyPrice, HargaJual:p.sellPrice, Stok:productStock(p.id)
+  }))), 'Barang');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(DB.sales.flatMap(s=>s.items.map(i=>({
+    No:s.id.slice(-6), Tanggal:fmtDate(s.date), Pelanggan:s.customerName, Barang:i.name, Qty:i.qty, Harga:i.price, Subtotal:i.qty*i.price
+  })))), 'Penjualan');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(DB.purchases.flatMap(p=>p.items.map(i=>({
+    No:p.id.slice(-6), Tanggal:fmtDate(p.date), Supplier:p.supplierName, Barang:i.name, Qty:i.qty, Harga:i.cost
+  })))), 'Pembelian');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(DB.cash.map(c=>({
+    Tanggal:fmtDate(c.date), Tipe:c.type==='in'?'Masuk':'Keluar', Kategori:c.category, Jumlah:c.amount, Catatan:c.note
+  }))), 'Kas');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(DB.stockMoves.map(m=>({
+    Tanggal:fmtDate(m.date), Barang:findProduct(m.productId)?.name||'', Tipe:m.type==='in'?'Masuk':'Keluar', Qty:m.qty, Harga:m.cost, Catatan:m.note
+  }))), 'Mutasi Stok');
+  XLSX.writeFile(wb, `Usahaku_${DB.business.name}_${todayStr()}.xlsx`);
+};
+window.resetData = () => {
+  if(!confirm('Semua data akan dihapus permanen. Lanjutkan?')) return;
+  if(!confirm('Yakin? Tidak bisa dibatalkan.')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  location.reload();
+};
+window.changeBusiness = () => {
+  if(!confirm('Mulai ulang onboarding? Data lama tetap tersimpan sampai Anda reset.')) return;
+  DB.business = null; saveDB(); renderApp();
+};
+
+/* ---------- Print ---------- */
+window.printSale = (id) => {
+  const s = DB.sales.find(x=>x.id===id);
+  if(!s) return;
+  const html = buildReceipt(s, 'PENJUALAN');
+  doPrint(html, s);
+};
+window.printPurchase = (id) => {
+  const p = DB.purchases.find(x=>x.id===id);
+  if(!p) return;
+  const fakeSale = {
+    id:p.id, date:p.date, customerName:p.supplierName, items:p.items.map(i=>({name:i.name,qty:i.qty,price:i.cost})),
+    subtotal:p.total, discount:0, total:p.total, paid:p.paid
+  };
+  doPrint(buildReceipt(fakeSale, 'PEMBELIAN'), fakeSale);
+};
+
+function buildReceipt(t, title){
+  const biz = DB.business;
+  return `
+    <div style="font-family:'Courier New',monospace;width:76mm;padding:2mm;color:#000;background:#fff;">
+      <div style="text-align:center;margin-bottom:6px;">
+        <div style="font-size:16px;font-weight:bold;">${esc(biz.name)}</div>
+        ${biz.address?`<div style="font-size:11px;">${esc(biz.address)}</div>`:''}
+        ${biz.phone?`<div style="font-size:11px;">Telp: ${esc(biz.phone)}</div>`:''}
+      </div>
+      <div style="border-top:1px dashed #000;margin:4px 0;"></div>
+      <div style="font-size:11px;">${title}</div>
+      <div style="font-size:11px;">No: ${t.id.slice(-8).toUpperCase()}</div>
+      <div style="font-size:11px;">Tgl: ${new Date(t.date).toLocaleString('id-ID')}</div>
+      <div style="font-size:11px;">Nama: ${esc(t.customerName||'-')}</div>
+      <div style="border-top:1px dashed #000;margin:4px 0;"></div>
+      ${t.items.map(i=>`
+        <div style="font-size:11px;">${esc(i.name)}</div>
+        <div style="font-size:11px;display:flex;justify-content:space-between;">
+          <span>${i.qty} x ${rp(i.price)}</span>
+          <span>${rp(i.qty*i.price)}</span>
+        </div>`).join('')}
+      <div style="border-top:1px dashed #000;margin:4px 0;"></div>
+      <div style="font-size:11px;display:flex;justify-content:space-between;"><span>Subtotal</span><span>${rp(t.subtotal)}</span></div>
+      ${t.discount?`<div style="font-size:11px;display:flex;justify-content:space-between;"><span>Diskon</span><span>-${rp(t.discount)}</span></div>`:''}
+      <div style="font-size:12px;font-weight:bold;display:flex;justify-content:space-between;"><span>TOTAL</span><span>${rp(t.total)}</span></div>
+      <div style="font-size:11px;display:flex;justify-content:space-between;"><span>Bayar</span><span>${rp(t.paid)}</span></div>
+      ${t.paid<t.total?`<div style="font-size:11px;display:flex;justify-content:space-between;"><span>Sisa</span><span>${rp(t.total-t.paid)}</span></div>`:''}
+      <div style="border-top:1px dashed #000;margin:4px 0;"></div>
+      <div style="text-align:center;font-size:11px;margin-top:6px;">Terima Kasih 🙏</div>
+      <div style="text-align:center;font-size:10px;">Powered by Usahaku</div>
+    </div>`;
+}
+
+function doPrint(html){
+  document.getElementById('printArea').innerHTML = html;
+  document.getElementById('printArea').classList.remove('hidden');
+  setTimeout(()=>{
+    window.print();
+    document.getElementById('printArea').classList.add('hidden');
+  }, 100);
+}
+
+/* ---------- Bluetooth Printer ---------- */
+window.connectBluetoothPrinter = async () => {
+  if(!navigator.bluetooth){ alert('Browser tidak mendukung Bluetooth. Gunakan Chrome/Edge.'); return; }
+  try {
+    const device = await navigator.bluetooth.requestDevice({ acceptAllDevices:true, optionalServices:[
+      '000018f0-0000-1000-8000-00805f9b34fb',
+      '0000ff00-0000-1000-8000-00805f9b34fb',
+      '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+      'e7810a71-73ae-499d-8c15-faa9aef0c3f2'
+    ]});
+    const server = await device.gatt.connect();
+    const services = await server.getPrimaryServices();
+    let char = null;
+    for(const s of services){
+      const chars = await s.getCharacteristics();
+      for(const c of chars){
+        if(c.properties.write || c.properties.writeWithoutResponse){ char = c; break; }
+      }
+      if(char) break;
+    }
+    if(!char){ alert('Printer ditemukan tapi tidak ada characteristic write.'); return; }
+    bluetoothChar = char;
+    alert('Printer terhubung: ' + (device.name||'Unknown'));
+  } catch(e){ alert('Gagal: ' + e.message); }
+};
+
+async function btWrite(text){
+  if(!bluetoothChar) return false;
+  const enc = new TextEncoder();
+  await bluetoothChar.writeValue(new Uint8Array([0x1B,0x40]));
+  const bytes = enc.encode(text + '\n\n\n');
+  for(let i=0;i<bytes.length;i+=100){
+    await bluetoothChar.writeValue(bytes.slice(i, i+100));
+    await new Promise(r=>setTimeout(r,20));
+  }
+  await bluetoothChar.writeValue(new Uint8Array([0x1D,0x56,0x00]));
+  return true;
+}
+
+window.testPrint = () => {
+  const html = `<div style="font-family:monospace;padding:8px;width:76mm">
+    <div style="text-align:center;font-weight:bold;">${esc(DB.business.name)}</div>
+    <div style="text-align:center;">TEST PRINT OK ✅</div>
+    <div style="text-align:center;font-size:11px;">${nowStr()}</div>
+  </div>`;
+  doPrint(html);
+};
+
+/* ---------- Printer Modal ---------- */
+function openPrinterModal(){
+  openModal('Mode Printer', `
+    <div class="space-y-3">
+      <label class="flex items-center gap-3 border p-3 rounded-lg cursor-pointer hover:bg-slate-50">
+        <input type="radio" name="pm" value="browser" ${DB.settings.printerMode==='browser'?'checked':''}/>
+        <div><div class="font-semibold text-sm">🖨️ Printer Biasa (Browser)</div>
+          <div class="text-xs text-slate-500">Gunakan dialog print browser untuk printer USB/Network/PDF</div></div>
+      </label>
+      <label class="flex items-center gap-3 border p-3 rounded-lg cursor-pointer hover:bg-slate-50">
+        <input type="radio" name="pm" value="bluetooth" ${DB.settings.printerMode==='bluetooth'?'checked':''}/>
+        <div><div class="font-semibold text-sm">🔵 Printer Bluetooth (Web Bluetooth)</div>
+          <div class="text-xs text-slate-500">Thermal printer 58mm/80mm via BLE (Chrome/Edge)</div></div>
+      </label>
+      <label class="flex items-center gap-3 border p-3 rounded-lg cursor-pointer hover:bg-slate-50">
+        <input type="radio" name="pm" value="none" ${DB.settings.printerMode==='none'?'checked':''}/>
+        <div><div class="font-semibold text-sm">💾 Tidak Cetak (Simpan Saja)</div>
+          <div class="text-xs text-slate-500">Setiap transaksi otomatis tersimpan di database</div></div>
+      </label>
+    </div>`, ()=>{
+    const sel = document.querySelector('input[name="pm"]:checked').value;
+    DB.settings.printerMode = sel;
+    saveDB();
+    if(sel==='bluetooth') connectBluetoothPrinter();
+    alert('Mode printer: ' + sel);
+  }, 'Terapkan');
+}
+
+/* ---------- Boot ---------- */
+function renderApp(){
+  loadDB();
+  const root = document.getElementById('app');
+  if(!DB.business){ root.innerHTML = renderOnboarding(); bindOnboarding(); }
+  else { root.innerHTML = renderMain(); bindMain(); navigate(currentView); }
+}
+
+renderApp();
+</script>
+</body>
+</html>
