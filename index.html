@@ -182,8 +182,12 @@ function renderMain(){
   const bizType = BUSINESS_TYPES.find(t=>t.id===DB.business.type) || BUSINESS_TYPES[5];
   return `
   <div class="min-h-screen flex">
-    <aside id="sidebar" class="hidden md:flex md:flex-col w-60 bg-white border-r border-slate-200 fixed md:static h-screen z-40">
-      <div class="p-4 border-b">
+    <!-- Backdrop (mobile only) -->
+    <div id="sidebarBackdrop" class="hidden fixed inset-0 bg-black/50 z-30 md:hidden"></div>
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="hidden md:flex flex-col w-60 bg-white border-r border-slate-200 fixed md:static top-0 left-0 h-screen z-40 overflow-hidden">
+      <div class="p-4 border-b flex items-center justify-between">
         <div class="flex items-center gap-2">
           <div class="w-9 h-9 bg-brand-600 rounded-lg flex items-center justify-center text-white font-bold">U</div>
           <div>
@@ -191,10 +195,11 @@ function renderMain(){
             <div class="text-xs text-slate-500">v1.0</div>
           </div>
         </div>
+        <button id="closeSide" class="md:hidden text-2xl text-slate-500 hover:text-slate-800 leading-none">×</button>
       </div>
       <nav class="flex-1 overflow-y-auto p-2">
         ${MENU.map(m=>`
-          <button data-view="${m.id}" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm hover:bg-slate-100 mb-1">
+          <button data-view="${m.id}" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm hover:bg-slate-100 mb-1 text-left">
             <span>${m.icon}</span><span>${m.label}</span>
           </button>
         `).join('')}
@@ -203,8 +208,8 @@ function renderMain(){
     </aside>
 
     <div class="flex-1 min-w-0">
-      <header class="bg-white border-b px-4 py-3 flex items-center gap-3 sticky top-0 z-30">
-        <button id="toggleSide" class="md:hidden text-2xl">☰</button>
+      <header class="bg-white border-b px-4 py-3 flex items-center gap-3 sticky top-0 z-20">
+        <button id="toggleSide" class="md:hidden text-2xl leading-none p-1 -ml-1">☰</button>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2">
             <span class="text-xl">${bizType.icon}</span>
@@ -224,15 +229,47 @@ function renderMain(){
   </div>`;
 }
 
+function openSidebar(){
+  const s = document.getElementById('sidebar');
+  const b = document.getElementById('sidebarBackdrop');
+  if(!s) return;
+  s.classList.remove('hidden');
+  s.classList.add('flex');
+  if(b) b.classList.remove('hidden');
+}
+
+function closeSidebar(){
+  const s = document.getElementById('sidebar');
+  const b = document.getElementById('sidebarBackdrop');
+  if(!s) return;
+  s.classList.add('hidden');
+  s.classList.remove('flex');
+  if(b) b.classList.add('hidden');
+}
+
 function bindMain(){
   document.querySelectorAll('.nav-btn').forEach(btn=>{
-    btn.onclick = () => { navigate(btn.dataset.view); document.getElementById('sidebar').classList.add('hidden'); document.getElementById('sidebar').classList.remove('flex'); };
+    btn.onclick = () => { navigate(btn.dataset.view); closeSidebar(); };
   });
-  document.getElementById('toggleSide').onclick = () => {
+
+  const toggle = document.getElementById('toggleSide');
+  if(toggle) toggle.onclick = () => {
     const s = document.getElementById('sidebar');
-    s.classList.toggle('hidden'); s.classList.toggle('flex');
+    if(s.classList.contains('hidden')) openSidebar();
+    else closeSidebar();
   };
+
+  const closeBtn = document.getElementById('closeSide');
+  if(closeBtn) closeBtn.onclick = closeSidebar;
+
+  const bd = document.getElementById('sidebarBackdrop');
+  if(bd) bd.onclick = closeSidebar;
+
   document.getElementById('btnPrintMode').onclick = openPrinterModal;
+
+  window.addEventListener('resize', () => {
+    if(window.innerWidth >= 768) closeSidebar();
+  });
 }
 
 function navigate(view){
@@ -1259,7 +1296,7 @@ VIEWS.cash = () => {
     <h2 class="text-xl font-bold">Kas & Bank</h2>
     <button onclick="openCashForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Transaksi Manual</button>
   </div>
-  <div class="grid grid-cols-3 gap-4 mb-4">
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
     ${statCard('Total Masuk', rp(inflow),'⬇️','bg-emerald-50 text-emerald-700')}
     ${statCard('Total Keluar', rp(outflow),'⬆️','bg-red-50 text-red-700')}
     ${statCard('Saldo', rp(balance),'💵','bg-brand-50 text-brand-700')}
@@ -1498,7 +1535,7 @@ VIEWS.settings = () => `
 
     <div class="bg-white rounded-xl border p-4 md:col-span-2">
       <h3 class="font-semibold mb-3 text-red-600">⚠️ Zona Berbahaya</h3>
-      <div class="flex gap-2">
+      <div class="flex flex-wrap gap-2">
         <button onclick="resetData()" class="border border-red-500 text-red-600 px-4 py-2 rounded-lg text-sm hover:bg-red-50">Reset Semua Data</button>
         <button onclick="changeBusiness()" class="border px-4 py-2 rounded-lg text-sm hover:bg-slate-50">Ganti Usaha (mulai ulang onboarding)</button>
       </div>
