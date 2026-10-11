@@ -54,6 +54,7 @@ let DB = {
 };
 let currentView = 'dashboard';
 let bluetoothChar = null;
+let EM_CART = []; // Easy Mode cart
 
 /* ---------- Helpers ---------- */
 const uid = (p='') => p + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
@@ -80,6 +81,11 @@ function productAvgCost(id){
     else { if(qty>0){ const c=val/qty; qty-=m.qty; val-=m.qty*c; } }
   }
   return qty>0 ? val/qty : (findProduct(id)?.buyPrice||0);
+}
+function saleChange(s){
+  if(typeof s.change === 'number') return s.change;
+  const paid = s.actualPaid ?? s.paid;
+  return Math.max(0, paid - s.total);
 }
 
 /* ---------- Onboarding ---------- */
@@ -171,6 +177,7 @@ const MENU = [
   {id:'customers', label:'Pelanggan', icon:'👥'},
   {id:'purchases', label:'Pembelian', icon:'🛍️'},
   {id:'sales', label:'Penjualan', icon:'💰'},
+  {id:'sales_em', label:'Penjualan EM', icon:'🛒'},
   {id:'cash', label:'Kas & Bank', icon:'💵'},
   {id:'debts', label:'Hutang', icon:'📉'},
   {id:'receivables', label:'Piutang', icon:'📈'},
@@ -182,10 +189,8 @@ function renderMain(){
   const bizType = BUSINESS_TYPES.find(t=>t.id===DB.business.type) || BUSINESS_TYPES[5];
   return `
   <div class="min-h-screen flex">
-    <!-- Backdrop (mobile only) -->
     <div id="sidebarBackdrop" class="hidden fixed inset-0 bg-black/50 z-30 md:hidden"></div>
 
-    <!-- Sidebar -->
     <aside id="sidebar" class="hidden md:flex flex-col w-60 bg-white border-r border-slate-200 fixed md:static top-0 left-0 h-screen z-40 overflow-hidden">
       <div class="p-4 border-b flex items-center justify-between">
         <div class="flex items-center gap-2">
@@ -308,6 +313,7 @@ function openModal(title, bodyHTML, onOk, okLabel='Simpan'){
   root.querySelector('#modalCancel').onclick = close;
   root.querySelector('#modalOk').onclick = () => { if(onOk()!==false) close(); };
 }
+function closeModalSilent(){ document.getElementById('modalRoot').innerHTML = ''; }
 
 /* ---------- VIEWS ---------- */
 const VIEWS = {};
@@ -357,7 +363,7 @@ VIEWS.dashboard = () => {
         ${recent.length? recent.map(s=>`
           <div class="flex justify-between items-center py-2 border-b last:border-0 text-sm">
             <div>
-              <div class="font-medium">${esc(s.customer||'Umum')}</div>
+              <div class="font-medium">${esc(s.customerName||'Umum')}</div>
               <div class="text-xs text-slate-500">${fmtDate(s.date)}</div>
             </div>
             <div class="font-semibold">${rp(s.total)}</div>
@@ -366,8 +372,9 @@ VIEWS.dashboard = () => {
       </div>
     </div>
 
-    <div class="grid md:grid-cols-4 gap-4 mt-4">
-      ${quickCard('Tambah Penjualan','💰','sales')}
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
+      ${quickCard('Penjualan EM','🛒','sales_em')}
+      ${quickCard('Penjualan','💰','sales')}
       ${quickCard('Tambah Pembelian','🛍️','purchases')}
       ${quickCard('Tambah Barang','📦','products')}
       ${quickCard('Kalkulator HPP','🧮','hpp')}
@@ -477,10 +484,7 @@ window.deleteProduct = (id) => {
   saveDB(); navigate('products');
 };
 
-/* ============================================================
-   === HPP Calculator ===
-   ============================================================ */
-
+/* === HPP Calculator === */
 const UNIT_INFO = {
   kg:    { cat:'mass',   factor:1000, base:'gram' },
   gram:  { cat:'mass',   factor:1,    base:'gram' },
@@ -490,7 +494,6 @@ const UNIT_INFO = {
   pcs:   { cat:'count',  factor:1,    base:'pcs' },
   pack:  { cat:'count',  factor:null, base:'pcs' }
 };
-
 function getUnitFactor(unit, packSize){
   const u = UNIT_INFO[unit];
   if(!u) return 1;
@@ -517,7 +520,6 @@ VIEWS.hpp = () => `
 
   <div class="grid lg:grid-cols-3 gap-4">
     <div class="lg:col-span-2 space-y-4">
-
       <div class="bg-white rounded-xl border p-4">
         <div class="flex justify-between items-start mb-3">
           <div>
@@ -1136,11 +1138,14 @@ window.openPayPurchase = (id) => {
   });
 };
 
-/* === Sales === */
+/* === Sales (Manual) === */
 VIEWS.sales = () => `
-  <div class="flex justify-between items-center mb-4">
+  <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
     <h2 class="text-xl font-bold">Penjualan</h2>
-    <button onclick="openSaleForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Penjualan Baru</button>
+    <div class="flex gap-2">
+      <button onclick="navigate('sales_em')" class="border px-4 py-2 rounded-lg hover:bg-slate-50 text-sm">🛒 Mode EM</button>
+      <button onclick="openSaleForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Penjualan Baru</button>
+    </div>
   </div>
   <div class="bg-white rounded-xl border overflow-x-auto">
     <table class="w-full text-sm">
@@ -1150,13 +1155,13 @@ VIEWS.sales = () => `
         <th class="text-right p-3">Aksi</th></tr></thead>
       <tbody>
         ${DB.sales.length ? DB.sales.slice().reverse().map(s=>{
-          const sisa = s.total - s.paid;
+          const sisa = Math.max(0, s.total - s.paid);
           return `<tr class="border-t hover:bg-slate-50">
             <td class="p-3 font-mono text-xs">${s.id.slice(-6)}</td>
             <td class="p-3">${fmtDate(s.date)}</td>
             <td class="p-3">${esc(s.customerName||'Umum')}</td>
             <td class="p-3 text-right">${rp(s.total)}</td>
-            <td class="p-3 text-right">${rp(s.paid)}</td>
+            <td class="p-3 text-right">${rp(s.actualPaid ?? s.paid)}</td>
             <td class="p-3 text-right ${sisa>0?'text-red-600 font-semibold':''}">${rp(sisa)}</td>
             <td class="p-3 text-right whitespace-nowrap">
               <button onclick="printSale('${s.id}')" class="text-slate-600 text-xs mr-2">🖨️</button>
@@ -1184,40 +1189,58 @@ window.openSaleForm = () => {
         <button onclick="addSaleRow()" class="mt-2 text-sm text-brand-600 hover:underline">+ Tambah Item</button>
       </div>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs text-slate-500">Diskon (Rp)</label>
-          <input id="sa_disc" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1" oninput="recalcSale()"/></div>
+        <div>
+          <label class="text-xs text-slate-500">Diskon</label>
+          <div class="flex gap-1 mt-1">
+            <select id="sa_disc_type" class="border rounded-lg px-2 py-2 text-sm" onchange="recalcSale()">
+              <option value="rp">Rp</option>
+              <option value="percent">%</option>
+            </select>
+            <input id="sa_disc" type="number" value="0" class="flex-1 border rounded-lg px-3 py-2 text-sm" oninput="recalcSale()"/>
+          </div>
+        </div>
         <div><label class="text-xs text-slate-500">Dibayar (Rp)</label>
-          <input id="sa_paid" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+          <input id="sa_paid" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1" oninput="recalcSale()"/></div>
       </div>
-      <div class="bg-brand-50 rounded-lg p-3 flex justify-between items-center">
-        <span class="text-sm font-semibold">Total</span>
-        <span id="sa_total" class="font-bold text-lg text-brand-700">Rp 0</span>
+      <div class="bg-brand-50 rounded-lg p-3 space-y-1">
+        <div class="flex justify-between text-sm"><span>Subtotal</span><b id="sa_subtotal">Rp 0</b></div>
+        <div class="flex justify-between text-sm"><span>Diskon</span><b id="sa_disc_show" class="text-red-600">Rp 0</b></div>
+        <div class="flex justify-between text-base font-bold border-t pt-1"><span>Total</span><span id="sa_total" class="text-brand-700">Rp 0</span></div>
+        <div id="sa_change_row" class="flex justify-between text-sm text-emerald-600 hidden"><span>Kembalian</span><b id="sa_change_amt">Rp 0</b></div>
       </div>
       <div id="sa_hpp" class="text-xs text-slate-500"></div>
-      <p class="text-xs text-slate-400">Sisa pembayaran akan dicatat sebagai piutang.</p>
+      <p class="text-xs text-slate-400">Boleh bayar lebih dari total, kembalian otomatis dihitung. Sisa kurang akan jadi piutang.</p>
     </div>`, ()=>{
     const items = collectSaleItems();
     if(!items.length){alert('Tambahkan minimal 1 item');return false;}
     const subtotal = items.reduce((a,i)=>a+i.qty*i.price,0);
-    const disc = +document.getElementById('sa_disc').value||0;
-    const total = subtotal - disc;
+    const discType = document.getElementById('sa_disc_type').value;
+    const discVal = +document.getElementById('sa_disc').value||0;
+    const disc = discType === 'percent' ? subtotal * (discVal/100) : discVal;
+    const total = Math.max(0, subtotal - disc);
     const paid = +document.getElementById('sa_paid').value||0;
-    if(paid>total){alert('Jumlah bayar melebihi total');return false;}
+    if(paid < 0){alert('Jumlah bayar tidak valid');return false;}
+    const change = Math.max(0, paid - total);
     const custId = document.getElementById('sa_cust').value;
     const cust = DB.customers.find(c=>c.id===custId);
     const date = document.getElementById('sa_date').value||todayStr();
     const sale = {
       id: uid('sa_'), date:new Date(date).toISOString(),
       customerId:custId, customerName:cust?.name||'Umum',
-      items, subtotal, discount:disc, total, paid:Math.min(paid,total)
+      items, subtotal, discount:disc, discountType:discType, discountValue:discVal, total,
+      paid: Math.min(paid, total),
+      actualPaid: paid,
+      change
     };
     DB.sales.push(sale);
     items.forEach(it=>{
       DB.stockMoves.push({id:uid('m_'),date:sale.date,productId:it.productId,type:'out',qty:it.qty,cost:it.cost,note:'Penjualan',ref:sale.id});
     });
-    if(sale.paid>0) DB.cash.push({id:uid('c_'),date:sale.date,type:'in',category:'Penjualan',amount:sale.paid,note:'Pembayaran penjualan '+sale.id.slice(-6),ref:sale.id});
+    if(paid>0) DB.cash.push({id:uid('c_'),date:sale.date,type:'in',category:'Penjualan',amount:Math.min(paid,total),note:'Pembayaran penjualan '+sale.id.slice(-6),ref:sale.id});
     saveDB();
-    const printNow = confirm('Transaksi tersimpan. Cetak struk sekarang?');
+    let msg = 'Transaksi tersimpan.';
+    if(change > 0) msg = `Transaksi tersimpan.\nKembalian: ${rp(change)}`;
+    const printNow = confirm(msg + '\n\nCetak struk sekarang?');
     navigate('sales');
     if(printNow) printSale(sale.id);
   });
@@ -1250,10 +1273,36 @@ function recalcSale(){
     sub += q*p;
     if(pid) hpp += q*productAvgCost(pid);
   });
-  const disc = +document.getElementById('sa_disc')?.value||0;
-  const total = sub - disc;
+  const discType = document.getElementById('sa_disc_type')?.value || 'rp';
+  const discVal = +document.getElementById('sa_disc')?.value||0;
+  const disc = discType === 'percent' ? sub * (discVal/100) : discVal;
+  const total = Math.max(0, sub - disc);
+  const paid = +document.getElementById('sa_paid')?.value || 0;
+  const change = Math.max(0, paid - total);
+
+  const subEl = document.getElementById('sa_subtotal');
+  if(subEl) subEl.textContent = rp(sub);
+  const discEl = document.getElementById('sa_disc_show');
+  if(discEl) discEl.textContent = '-' + rp(Math.round(disc)) + (discType==='percent'?` (${discVal}%)`:'');
   const totalEl = document.getElementById('sa_total');
   if(totalEl) totalEl.textContent = rp(total);
+
+  const changeRow = document.getElementById('sa_change_row');
+  const changeAmt = document.getElementById('sa_change_amt');
+  if(changeRow && changeAmt){
+    if(paid > 0 && paid >= total && change > 0){
+      changeRow.classList.remove('hidden');
+      changeAmt.textContent = rp(change);
+    } else if(paid > 0 && paid < total){
+      changeRow.classList.remove('hidden');
+      changeRow.className = 'flex justify-between text-sm text-red-600';
+      changeAmt.textContent = 'Kurang ' + rp(total - paid);
+    } else {
+      changeRow.classList.add('hidden');
+      changeRow.className = 'flex justify-between text-sm text-emerald-600 hidden';
+    }
+  }
+
   const hppEl = document.getElementById('sa_hpp');
   if(hppEl) hppEl.textContent = `Estimasi HPP: ${rp(hpp)} • Laba kotor: ${rp(total-hpp)}`;
 }
@@ -1273,7 +1322,7 @@ function collectSaleItems(){
 
 window.openPaySale = (id) => {
   const s = DB.sales.find(x=>x.id===id);
-  const sisa = s.total - s.paid;
+  const sisa = Math.max(0, s.total - s.paid);
   openModal('Terima Pembayaran', `
     <p class="text-sm mb-2">Sisa tagihan: <b>${rp(sisa)}</b></p>
     <label class="text-xs text-slate-500">Jumlah Bayar</label>
@@ -1281,10 +1330,312 @@ window.openPaySale = (id) => {
     const amt = +document.getElementById('pay_amt').value||0;
     if(amt<=0||amt>sisa){alert('Jumlah tidak valid');return false;}
     s.paid += amt;
+    s.actualPaid = (s.actualPaid || s.paid - amt) + amt;
     DB.cash.push({id:uid('c_'),date:new Date().toISOString(),type:'in',category:'Terima Piutang',amount:amt,note:'Penerimaan piutang '+s.id.slice(-6),ref:s.id});
     saveDB(); navigate('sales');
   });
 };
+
+/* ============================================================
+   === PENJUALAN EM (Easy Mode) ===
+   ============================================================ */
+VIEWS.sales_em = () => {
+  if(!DB.products.length){
+    return `<div class="text-center p-12 text-slate-400">
+      <div class="text-5xl mb-3">📦</div>
+      <p class="mb-4">Belum ada barang. Tambahkan barang dulu ya.</p>
+      <button onclick="navigate('products')" class="bg-brand-600 text-white px-4 py-2 rounded-lg text-sm">+ Tambah Barang</button>
+    </div>`;
+  }
+  return `
+    <div class="mb-4 flex justify-between items-center flex-wrap gap-2">
+      <div>
+        <h2 class="text-xl font-bold">🛒 Penjualan EM</h2>
+        <p class="text-xs text-slate-500 mt-1">Ketuk produk untuk menambah ke keranjang</p>
+      </div>
+      <input id="em_search" placeholder="🔍 Cari produk..." class="border rounded-lg px-3 py-2 text-sm w-full sm:w-72" oninput="emFilterProducts()"/>
+    </div>
+    <div id="em_products" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 pb-32"></div>
+
+    <div class="fixed bottom-4 right-4 md:right-6 z-30">
+      <button onclick="emOpenCart()" class="bg-brand-600 hover:bg-brand-700 text-white rounded-full shadow-2xl px-5 py-3 flex items-center gap-2">
+        <span class="text-xl">🛒</span>
+        <span id="em_cart_count" class="bg-white text-brand-700 rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold">0</span>
+        <span class="hidden sm:inline">·</span>
+        <span id="em_cart_total" class="font-semibold hidden sm:inline">Rp 0</span>
+      </button>
+    </div>`;
+};
+
+VIEWS.sales_em_bind = () => {
+  EM_CART = [];
+  emRenderProducts();
+  emUpdateCartBadge();
+};
+
+function emFilterProducts(){ emRenderProducts(); }
+
+function emRenderProducts(){
+  const box = document.getElementById('em_products');
+  if(!box) return;
+  const q = (document.getElementById('em_search')?.value || '').toLowerCase();
+  const list = DB.products.filter(p =>
+    !q || p.name.toLowerCase().includes(q) || (p.sku||'').toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q)
+  );
+  if(!list.length){
+    box.innerHTML = `<div class="col-span-full text-center p-8 text-slate-400">Produk tidak ditemukan</div>`;
+    return;
+  }
+  box.innerHTML = list.map(p => {
+    const st = productStock(p.id);
+    const cartItem = EM_CART.find(c => c.productId === p.id);
+    const qtyInCart = cartItem ? cartItem.qty : 0;
+    const outOfStock = st <= 0;
+    return `
+      <button onclick="emAddToCart('${p.id}')" class="relative bg-white rounded-xl border hover:border-brand-500 hover:shadow-md transition p-3 text-left ${outOfStock?'opacity-50 cursor-not-allowed':''}" ${outOfStock?'disabled':''}>
+        <div class="aspect-square bg-gradient-to-br from-brand-50 to-brand-100 rounded-lg flex items-center justify-center mb-2 text-4xl">📦</div>
+        <div class="font-semibold text-sm truncate">${esc(p.name)}</div>
+        <div class="text-xs text-slate-500 truncate">Stok: ${st} ${esc(p.unit||'')}</div>
+        <div class="text-brand-700 font-bold text-sm mt-1">${rp(p.sellPrice)}</div>
+        ${qtyInCart>0?`<div class="absolute top-2 right-2 bg-brand-600 text-white text-xs font-bold rounded-full w-7 h-7 flex items-center justify-center shadow">${qtyInCart}</div>`:''}
+      </button>`;
+  }).join('');
+}
+
+window.emAddToCart = (id) => {
+  const p = findProduct(id);
+  if(!p) return;
+  const st = productStock(id);
+  const item = EM_CART.find(c => c.productId === id);
+  if(item){
+    if(item.qty >= st){ alert('Stok tidak cukup'); return; }
+    item.qty++;
+  } else {
+    if(st <= 0){ alert('Stok habis'); return; }
+    EM_CART.push({productId: id, qty: 1});
+  }
+  emRenderProducts();
+  emUpdateCartBadge();
+};
+
+function emUpdateCartBadge(){
+  const countEl = document.getElementById('em_cart_count');
+  const totalEl = document.getElementById('em_cart_total');
+  if(!countEl || !totalEl) return;
+  const count = EM_CART.reduce((a,c)=>a+c.qty,0);
+  const total = EM_CART.reduce((a,c)=>{
+    const p = findProduct(c.productId);
+    return a + (p?.sellPrice||0) * c.qty;
+  }, 0);
+  countEl.textContent = count;
+  totalEl.textContent = rp(total);
+}
+
+window.emOpenCart = () => {
+  if(!EM_CART.length){ alert('Keranjang masih kosong'); return; }
+  const custOpts = '<option value="">Pelanggan Umum</option>' + DB.customers.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  openModal('🛒 Keranjang', `
+    <div class="space-y-3">
+      <div id="em_cart_list" class="space-y-2 max-h-64 overflow-y-auto"></div>
+      <div class="grid grid-cols-2 gap-3 pt-2 border-t">
+        <div>
+          <label class="text-xs text-slate-500">Pelanggan</label>
+          <select id="em_cust" class="w-full border rounded-lg px-3 py-2 mt-1 text-sm">${custOpts}</select>
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">Diskon</label>
+          <div class="flex gap-1 mt-1">
+            <select id="em_disc_type" class="border rounded-lg px-2 py-2 text-sm">
+              <option value="rp">Rp</option>
+              <option value="percent">%</option>
+            </select>
+            <input id="em_disc" type="number" value="0" class="flex-1 border rounded-lg px-3 py-2 text-sm"/>
+          </div>
+        </div>
+      </div>
+    </div>`, ()=>{ emProceedToPay(); return false; }, 'Lanjut Bayar →');
+  emRenderCartList();
+};
+
+function emRenderCartList(){
+  const box = document.getElementById('em_cart_list');
+  if(!box) return;
+  box.innerHTML = EM_CART.map((item, idx) => {
+    const p = findProduct(item.productId);
+    if(!p) return '';
+    return `
+      <div class="flex items-center gap-2 border rounded-lg p-2">
+        <div class="flex-1 min-w-0">
+          <div class="font-medium text-sm truncate">${esc(p.name)}</div>
+          <div class="text-xs text-slate-500">${rp(p.sellPrice)} × ${item.qty} = <b class="text-brand-700">${rp(p.sellPrice * item.qty)}</b></div>
+        </div>
+        <div class="flex items-center gap-1">
+          <button onclick="emChangeQty(${idx}, -1)" class="w-8 h-8 rounded border text-lg hover:bg-slate-100 leading-none">−</button>
+          <span class="w-8 text-center text-sm font-semibold">${item.qty}</span>
+          <button onclick="emChangeQty(${idx}, 1)" class="w-8 h-8 rounded border text-lg hover:bg-slate-100 leading-none">+</button>
+          <button onclick="emRemoveItem(${idx})" class="text-red-500 ml-1 px-1 text-base">🗑️</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+window.emChangeQty = (idx, delta) => {
+  const item = EM_CART[idx];
+  if(!item) return;
+  const st = productStock(item.productId);
+  const newQty = item.qty + delta;
+  if(newQty < 1){ emRemoveItem(idx); return; }
+  if(newQty > st){ alert('Stok tidak cukup'); return; }
+  item.qty = newQty;
+  emRenderCartList();
+  emUpdateCartBadge();
+};
+
+window.emRemoveItem = (idx) => {
+  EM_CART.splice(idx, 1);
+  if(!EM_CART.length){
+    closeModalSilent();
+    emRenderProducts();
+    emUpdateCartBadge();
+    return;
+  }
+  emRenderCartList();
+  emUpdateCartBadge();
+};
+
+function emProceedToPay(){
+  const discType = document.getElementById('em_disc_type').value;
+  const discVal = +document.getElementById('em_disc').value || 0;
+  const custId = document.getElementById('em_cust').value;
+  const cust = DB.customers.find(c => c.id === custId);
+
+  let subtotal = 0;
+  EM_CART.forEach(item => {
+    const p = findProduct(item.productId);
+    subtotal += (p?.sellPrice||0) * item.qty;
+  });
+  const disc = discType === 'percent' ? subtotal * (discVal/100) : discVal;
+  const total = Math.max(0, subtotal - disc);
+
+  openModal('💵 Pembayaran', `
+    <div class="space-y-4">
+      <div class="bg-brand-50 rounded-xl p-4 text-center border border-brand-100">
+        <div class="text-xs text-brand-700 mb-1">Total yang harus dibayar</div>
+        <div class="text-3xl font-bold text-brand-700">${rp(total)}</div>
+      </div>
+      <div class="text-sm space-y-1 border rounded-lg p-3 bg-slate-50">
+        <div class="flex justify-between"><span>Subtotal</span><b>${rp(subtotal)}</b></div>
+        ${disc>0?`<div class="flex justify-between text-red-600"><span>Diskon ${discType==='percent'?`(${discVal}%)`:''}</span><b>-${rp(Math.round(disc))}</b></div>`:''}
+        <div class="flex justify-between border-t pt-1"><span>Pelanggan</span><b>${esc(cust?.name||'Umum')}</b></div>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Uang Diterima (Rp)</label>
+        <input id="em_paid" type="number" value="${total}" class="w-full border rounded-lg px-3 py-3 mt-1 text-lg font-semibold text-center" oninput="emUpdateChange(${total})"/>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <button onclick="emQuickPay(${total}, ${total})" class="border rounded-lg py-2 text-sm hover:bg-slate-50">Uang Pas</button>
+        <button onclick="emQuickPay(20000, ${total})" class="border rounded-lg py-2 text-sm hover:bg-slate-50">20.000</button>
+        <button onclick="emQuickPay(50000, ${total})" class="border rounded-lg py-2 text-sm hover:bg-slate-50">50.000</button>
+        <button onclick="emQuickPay(100000, ${total})" class="border rounded-lg py-2 text-sm hover:bg-slate-50">100.000</button>
+        <button onclick="emQuickPay(150000, ${total})" class="border rounded-lg py-2 text-sm hover:bg-slate-50">150.000</button>
+        <button onclick="emQuickPay(200000, ${total})" class="border rounded-lg py-2 text-sm hover:bg-slate-50">200.000</button>
+      </div>
+      <div id="em_change_box" class="bg-emerald-50 rounded-xl p-4 text-center">
+        <div class="text-xs text-emerald-700 mb-1">Kembalian</div>
+        <div id="em_change_amt" class="text-2xl font-bold text-emerald-700">Rp 0</div>
+      </div>
+    </div>`, ()=>{
+    emFinalizeSale(custId, subtotal, disc, discType, discVal, total);
+  }, '✅ Selesaikan');
+
+  emUpdateChange(total);
+}
+
+window.emUpdateChange = (total) => {
+  const paid = +document.getElementById('em_paid')?.value || 0;
+  emUpdateChangeSimple(paid, total);
+};
+
+window.emQuickPay = (amount, total) => {
+  const el = document.getElementById('em_paid');
+  if(el) el.value = amount;
+  emUpdateChangeSimple(amount, total);
+};
+
+function emUpdateChangeSimple(paid, total){
+  const el = document.getElementById('em_change_amt');
+  const box = document.getElementById('em_change_box');
+  if(!el || !box) return;
+  if(paid < total){
+    box.className = 'bg-red-50 rounded-xl p-4 text-center border border-red-200';
+    el.className = 'text-2xl font-bold text-red-700';
+    el.textContent = 'Kurang ' + rp(total - paid);
+  } else {
+    box.className = 'bg-emerald-50 rounded-xl p-4 text-center border border-emerald-200';
+    el.className = 'text-2xl font-bold text-emerald-700';
+    el.textContent = rp(paid - total);
+  }
+}
+
+function emFinalizeSale(custId, subtotal, disc, discType, discVal, total){
+  const paid = +document.getElementById('em_paid').value || 0;
+  if(paid < total){ alert('Uang yang diterima kurang dari total'); return false; }
+  const change = paid - total;
+  const cust = DB.customers.find(c => c.id === custId);
+
+  const items = EM_CART.map(c => {
+    const p = findProduct(c.productId);
+    return {
+      productId: c.productId,
+      name: p?.name||'',
+      qty: c.qty,
+      price: p?.sellPrice||0,
+      cost: productAvgCost(c.productId)
+    };
+  });
+
+  const sale = {
+    id: uid('sa_'),
+    date: new Date().toISOString(),
+    customerId: custId,
+    customerName: cust?.name || 'Umum',
+    items, subtotal,
+    discount: disc,
+    discountType: discType,
+    discountValue: discVal,
+    total,
+    paid: Math.min(paid, total),
+    actualPaid: paid,
+    change: change,
+    mode: 'EM'
+  };
+
+  DB.sales.push(sale);
+  items.forEach(it => {
+    DB.stockMoves.push({
+      id: uid('m_'), date: sale.date,
+      productId: it.productId, type:'out', qty: it.qty,
+      cost: it.cost, note:'Penjualan EM', ref: sale.id
+    });
+  });
+  DB.cash.push({
+    id: uid('c_'), date: sale.date, type:'in',
+    category:'Penjualan', amount: total,
+    note:'Penjualan EM ' + sale.id.slice(-6), ref: sale.id
+  });
+
+  saveDB();
+  EM_CART = [];
+  emRenderProducts();
+  emUpdateCartBadge();
+
+  // Tampilkan konfirmasi cetak (setelah modal tertutup)
+  setTimeout(()=>{
+    const printNow = confirm(`✅ Transaksi berhasil!\n\nTotal: ${rp(total)}\nDibayar: ${rp(paid)}\nKembalian: ${rp(change)}\n\nCetak struk?`);
+    if(printNow) printSale(sale.id);
+  }, 150);
+  return true;
+}
 
 /* === Cash === */
 VIEWS.cash = () => {
@@ -1383,7 +1734,7 @@ VIEWS.debts = () => {
 /* === Receivables === */
 VIEWS.receivables = () => {
   const unpaid = DB.sales.filter(s=>s.paid<s.total);
-  const total = unpaid.reduce((a,s)=>a+(s.total-s.paid),0);
+  const total = unpaid.reduce((a,s)=>a+Math.max(0,s.total-s.paid),0);
   return `
   <div class="flex justify-between items-center mb-4">
     <h2 class="text-xl font-bold">Piutang (dari Pelanggan)</h2>
@@ -1484,7 +1835,7 @@ window.exportReportExcel = () => {
   const d = getReportData(from, to);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.sales.map(s=>({
-    Tanggal: fmtDate(s.date), Pelanggan:s.customerName, Subtotal:s.subtotal, Diskon:s.discount, Total:s.total, Dibayar:s.paid, Sisa:s.total-s.paid
+    Tanggal: fmtDate(s.date), Pelanggan:s.customerName, Subtotal:s.subtotal, Diskon:s.discount, Total:s.total, Dibayar:s.actualPaid ?? s.paid, Kembalian: saleChange(s), Sisa: Math.max(0,s.total-s.paid)
   }))), 'Penjualan');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.purchases.map(p=>({
     Tanggal: fmtDate(p.date), Supplier:p.supplierName, Total:p.total, Dibayar:p.paid, Sisa:p.total-p.paid
@@ -1576,7 +1927,7 @@ window.exportAllExcel = () => {
     SKU:p.sku, Nama:p.name, Kategori:p.category, Satuan:p.unit, HargaBeli:p.buyPrice, HargaJual:p.sellPrice, Stok:productStock(p.id)
   }))), 'Barang');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(DB.sales.flatMap(s=>s.items.map(i=>({
-    No:s.id.slice(-6), Tanggal:fmtDate(s.date), Pelanggan:s.customerName, Barang:i.name, Qty:i.qty, Harga:i.price, Subtotal:i.qty*i.price
+    No:s.id.slice(-6), Tanggal:fmtDate(s.date), Pelanggan:s.customerName, Mode:s.mode||'Manual', Barang:i.name, Qty:i.qty, Harga:i.price, Subtotal:i.qty*i.price
   })))), 'Penjualan');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(DB.purchases.flatMap(p=>p.items.map(i=>({
     No:p.id.slice(-6), Tanggal:fmtDate(p.date), Supplier:p.supplierName, Barang:i.name, Qty:i.qty, Harga:i.cost
@@ -1604,7 +1955,7 @@ window.changeBusiness = () => {
 window.printSale = (id) => {
   const s = DB.sales.find(x=>x.id===id);
   if(!s) return;
-  const html = buildReceipt(s, 'PENJUALAN');
+  const html = buildReceipt(s, s.mode==='EM'?'PENJUALAN (EM)':'PENJUALAN');
   doPrint(html, s);
 };
 window.printPurchase = (id) => {
@@ -1612,13 +1963,16 @@ window.printPurchase = (id) => {
   if(!p) return;
   const fakeSale = {
     id:p.id, date:p.date, customerName:p.supplierName, items:p.items.map(i=>({name:i.name,qty:i.qty,price:i.cost})),
-    subtotal:p.total, discount:0, total:p.total, paid:p.paid
+    subtotal:p.total, discount:0, total:p.total, paid:p.paid, actualPaid:p.paid, change:0
   };
   doPrint(buildReceipt(fakeSale, 'PEMBELIAN'), fakeSale);
 };
 
 function buildReceipt(t, title){
   const biz = DB.business;
+  const bayar = t.actualPaid ?? t.paid;
+  const kembali = t.change ?? Math.max(0, bayar - t.total);
+  const sisa = Math.max(0, t.total - t.paid);
   return `
     <div style="font-family:'Courier New',monospace;width:76mm;padding:2mm;color:#000;background:#fff;">
       <div style="text-align:center;margin-bottom:6px;">
@@ -1642,8 +1996,9 @@ function buildReceipt(t, title){
       <div style="font-size:11px;display:flex;justify-content:space-between;"><span>Subtotal</span><span>${rp(t.subtotal)}</span></div>
       ${t.discount?`<div style="font-size:11px;display:flex;justify-content:space-between;"><span>Diskon</span><span>-${rp(t.discount)}</span></div>`:''}
       <div style="font-size:12px;font-weight:bold;display:flex;justify-content:space-between;"><span>TOTAL</span><span>${rp(t.total)}</span></div>
-      <div style="font-size:11px;display:flex;justify-content:space-between;"><span>Bayar</span><span>${rp(t.paid)}</span></div>
-      ${t.paid<t.total?`<div style="font-size:11px;display:flex;justify-content:space-between;"><span>Sisa</span><span>${rp(t.total-t.paid)}</span></div>`:''}
+      <div style="font-size:11px;display:flex;justify-content:space-between;"><span>Bayar</span><span>${rp(bayar)}</span></div>
+      ${kembali>0?`<div style="font-size:11px;display:flex;justify-content:space-between;"><span>Kembali</span><span>${rp(kembali)}</span></div>`:''}
+      ${sisa>0?`<div style="font-size:11px;display:flex;justify-content:space-between;"><span>Sisa</span><span>${rp(sisa)}</span></div>`:''}
       <div style="border-top:1px dashed #000;margin:4px 0;"></div>
       <div style="text-align:center;font-size:11px;margin-top:6px;">Terima Kasih 🙏</div>
       <div style="text-align:center;font-size:10px;">Powered by Usahaku</div>
