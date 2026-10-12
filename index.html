@@ -8,6 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 tailwind.config = {
+  darkMode: 'class',
   theme: { extend: { colors: {
     brand: {50:'#eef2ff',100:'#e0e7ff',500:'#6366f1',600:'#4f46e5',700:'#4338ca'}
   }}}
@@ -27,6 +28,69 @@ tailwind.config = {
     #printArea, #printArea *{visibility:visible}
     #printArea{position:absolute;left:0;top:0;width:80mm;background:#fff}
   }
+
+  /* ============ DARK MODE OVERRIDES ============ */
+  html.dark { color-scheme: dark; }
+  html.dark body { background-color:#0f172a !important; color:#e2e8f0; }
+  html.dark .bg-white { background-color:#1e293b !important; }
+  html.dark .bg-slate-50 { background-color:#1e293b !important; }
+  html.dark .bg-slate-100 { background-color:#0f172a !important; }
+  html.dark .bg-slate-200 { background-color:#334155 !important; }
+  html.dark .bg-slate-800 { background-color:#0f172a !important; }
+  html.dark .bg-slate-900 { background-color:#020617 !important; }
+  html.dark .text-slate-800 { color:#e2e8f0 !important; }
+  html.dark .text-slate-700 { color:#cbd5e1 !important; }
+  html.dark .text-slate-600 { color:#94a3b8 !important; }
+  html.dark .text-slate-500 { color:#94a3b8 !important; }
+  html.dark .text-slate-400 { color:#64748b !important; }
+  html.dark .border,
+  html.dark .border-slate-200,
+  html.dark .border-slate-300 { border-color:#334155 !important; }
+  html.dark .divide-slate-200 > * + * { border-color:#334155 !important; }
+  html.dark input,
+  html.dark select,
+  html.dark textarea {
+    background-color:#0f172a !important;
+    color:#e2e8f0 !important;
+    border-color:#334155 !important;
+  }
+  html.dark input::placeholder { color:#64748b !important; }
+  html.dark .bg-brand-50 { background-color:#1e1b4b !important; }
+  html.dark .bg-brand-100 { background-color:#312e81 !important; }
+  html.dark .border-brand-100 { border-color:#3730a3 !important; }
+  html.dark .text-brand-700 { color:#a5b4fc !important; }
+  html.dark .text-brand-600 { color:#818cf8 !important; }
+  html.dark .bg-emerald-50 { background-color:#064e3b !important; }
+  html.dark .border-emerald-100,
+  html.dark .border-emerald-200 { border-color:#065f46 !important; }
+  html.dark .text-emerald-700 { color:#6ee7b7 !important; }
+  html.dark .text-emerald-600 { color:#34d399 !important; }
+  html.dark .bg-red-50 { background-color:#450a0a !important; }
+  html.dark .border-red-200 { border-color:#7f1d1d !important; }
+  html.dark .text-red-700 { color:#fca5a5 !important; }
+  html.dark .text-red-600 { color:#f87171 !important; }
+  html.dark .bg-amber-50 { background-color:#451a03 !important; }
+  html.dark .text-amber-700 { color:#fcd34d !important; }
+  html.dark .bg-blue-50 { background-color:#172554 !important; }
+  html.dark .text-blue-700 { color:#93c5fd !important; }
+  html.dark .bg-purple-50 { background-color:#2e1065 !important; }
+  html.dark .text-purple-700 { color:#c4b5fd !important; }
+  html.dark .bg-indigo-50 { background-color:#1e1b4b !important; }
+  html.dark .bg-gradient-to-br.from-brand-50.via-white.to-brand-100 {
+    background: linear-gradient(to bottom right,#0f172a,#1e293b,#1e1b4b) !important;
+  }
+  html.dark .hover\:bg-slate-50:hover { background-color:#334155 !important; }
+  html.dark .hover\:bg-slate-100:hover { background-color:#334155 !important; }
+  html.dark .hover\:bg-red-50:hover { background-color:#450a0a !important; }
+  html.dark .hover\:bg-brand-700:hover { background-color:#6366f1 !important; }
+  html.dark thead.bg-slate-50 { background-color:#1e293b !important; }
+  html.dark table { color:#e2e8f0; }
+  html.dark tr.hover\:bg-slate-50:hover { background-color:#334155 !important; }
+  html.dark .shadow-xl, html.dark .shadow-2xl { box-shadow: 0 10px 25px rgba(0,0,0,.6); }
+  html.dark .bg-black\/50 { background-color: rgba(0,0,0,.75) !important; }
+  html.dark .aspect-square.bg-gradient-to-br.from-brand-50.to-brand-100 {
+    background: linear-gradient(to bottom right,#312e81,#3730a3) !important;
+  }
 </style>
 </head>
 <body class="bg-slate-100 text-slate-800">
@@ -37,7 +101,12 @@ tailwind.config = {
 
 <script>
 /* ============================================================
-   USHAKU — Single-file Business Management App
+   USHAKU — Single-file Business Management App v1.1
+   + Dark Mode
+   + Auto accumulate stock on duplicate name
+   + Quick Add Stock button
+   + Category filter on Sales
+   + Category sections on EM Sales
    ============================================================ */
 
 const STORAGE_KEY = 'kasirin_db_v1';
@@ -50,11 +119,13 @@ let DB = {
   purchases: [],
   cash: [],
   stockMoves: [],
-  settings: { hppMethod:'average', printerMode:'browser' }
+  settings: { hppMethod:'average', printerMode:'browser', darkMode:false }
 };
 let currentView = 'dashboard';
 let bluetoothChar = null;
-let EM_CART = []; // Easy Mode cart
+let EM_CART = [];
+let SALES_FILTER_CAT = '';
+let EM_SELECTED_CAT = '';
 
 /* ---------- Helpers ---------- */
 const uid = (p='') => p + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
@@ -66,8 +137,17 @@ const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','
 
 function loadDB(){
   try{ const r = localStorage.getItem(STORAGE_KEY); if(r) DB = {...DB, ...JSON.parse(r)}; }catch(e){}
+  if(!DB.settings) DB.settings = {};
+  if(typeof DB.settings.darkMode !== 'boolean') DB.settings.darkMode = false;
 }
 function saveDB(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); }
+
+function applyDarkMode(){
+  if(DB.settings.darkMode) document.documentElement.classList.add('dark');
+  else document.documentElement.classList.remove('dark');
+  const icon = document.getElementById('btnDarkModeIcon');
+  if(icon) icon.textContent = DB.settings.darkMode ? '☀️' : '🌙';
+}
 
 function findProduct(id){ return DB.products.find(p=>p.id===id); }
 function productStock(id){
@@ -86,6 +166,14 @@ function saleChange(s){
   if(typeof s.change === 'number') return s.change;
   const paid = s.actualPaid ?? s.paid;
   return Math.max(0, paid - s.total);
+}
+function getAllCategories(){
+  const set = new Set();
+  DB.products.forEach(p => {
+    const c = (p.category||'').trim();
+    if(c) set.add(c);
+  });
+  return [...set].sort((a,b)=>a.localeCompare(b,'id'));
 }
 
 /* ---------- Onboarding ---------- */
@@ -197,7 +285,7 @@ function renderMain(){
           <div class="w-9 h-9 bg-brand-600 rounded-lg flex items-center justify-center text-white font-bold">U</div>
           <div>
             <div class="font-bold text-sm">Usahaku</div>
-            <div class="text-xs text-slate-500">v1.0</div>
+            <div class="text-xs text-slate-500">v1.1</div>
           </div>
         </div>
         <button id="closeSide" class="md:hidden text-2xl text-slate-500 hover:text-slate-800 leading-none">×</button>
@@ -222,6 +310,9 @@ function renderMain(){
             <span class="hidden sm:inline text-xs bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full">${bizType.name}</span>
           </div>
         </div>
+        <button id="btnDarkMode" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50" title="Mode Gelap/Terang">
+          <span id="btnDarkModeIcon">${DB.settings.darkMode?'☀️':'🌙'}</span>
+        </button>
         <button id="btnPrintMode" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50" title="Mode Printer">
           🖨️ <span class="hidden sm:inline">Printer</span>
         </button>
@@ -269,6 +360,13 @@ function bindMain(){
 
   const bd = document.getElementById('sidebarBackdrop');
   if(bd) bd.onclick = closeSidebar;
+
+  const dm = document.getElementById('btnDarkMode');
+  if(dm) dm.onclick = () => {
+    DB.settings.darkMode = !DB.settings.darkMode;
+    saveDB();
+    applyDarkMode();
+  };
 
   document.getElementById('btnPrintMode').onclick = openPrinterModal;
 
@@ -396,15 +494,30 @@ const quickCard = (label,icon,view) => `
   </button>`;
 
 /* === Products === */
-VIEWS.products = () => `
+VIEWS.products = () => {
+  const cats = getAllCategories();
+  return `
   <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
     <h2 class="text-xl font-bold">Daftar Barang</h2>
-    <div class="flex gap-2">
+    <div class="flex gap-2 flex-wrap">
+      <select id="pr_filter_cat" onchange="renderProductsTable()" class="border rounded-lg px-3 py-2 text-sm">
+        <option value="">Semua Kategori</option>
+        ${cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+      </select>
       <button onclick="navigate('hpp')" class="border px-4 py-2 rounded-lg hover:bg-slate-50 text-sm">🧮 Kalkulator HPP</button>
       <button onclick="openProductForm()" class="bg-brand-600 text-white px-4 py-2 rounded-lg hover:bg-brand-700 text-sm">+ Tambah Barang</button>
     </div>
   </div>
-  <div class="bg-white rounded-xl border overflow-x-auto">
+  <div class="bg-white rounded-xl border overflow-x-auto" id="pr_table_wrap"></div>`;
+};
+VIEWS.products_bind = () => renderProductsTable();
+
+function renderProductsTable(){
+  const wrap = document.getElementById('pr_table_wrap');
+  if(!wrap) return;
+  const filterCat = document.getElementById('pr_filter_cat')?.value || '';
+  const list = DB.products.filter(p => !filterCat || (p.category||'') === filterCat);
+  wrap.innerHTML = `
     <table class="w-full text-sm">
       <thead class="bg-slate-50 text-slate-600">
         <tr><th class="text-left p-3">SKU</th><th class="text-left p-3">Nama</th><th class="text-left p-3">Kategori</th>
@@ -412,7 +525,7 @@ VIEWS.products = () => `
         <th class="text-right p-3">Stok</th><th class="text-right p-3">Aksi</th></tr>
       </thead>
       <tbody>
-        ${DB.products.length ? DB.products.map(p=>{
+        ${list.length ? list.map(p=>{
           const st = productStock(p.id);
           const low = st <= (p.minStock||0);
           return `<tr class="border-t hover:bg-slate-50">
@@ -423,13 +536,50 @@ VIEWS.products = () => `
             <td class="p-3 text-right">${rp(p.sellPrice)}</td>
             <td class="p-3 text-right ${low?'text-red-600 font-semibold':''}">${st} ${esc(p.unit||'')}</td>
             <td class="p-3 text-right whitespace-nowrap">
+              <button onclick="openAddStock('${p.id}')" class="text-emerald-600 hover:underline text-xs mr-2">+ Stok</button>
               <button onclick="openProductForm('${p.id}')" class="text-brand-600 hover:underline text-xs mr-2">Edit</button>
               <button onclick="deleteProduct('${p.id}')" class="text-red-600 hover:underline text-xs">Hapus</button>
             </td></tr>`;
         }).join('') : `<tr><td colspan="7" class="p-8 text-center text-slate-400">Belum ada barang. Klik "+ Tambah Barang"</td></tr>`}
       </tbody>
-    </table>
-  </div>`;
+    </table>`;
+}
+
+/* Tombol +Stok cepat */
+window.openAddStock = (id) => {
+  const p = findProduct(id);
+  if(!p){ alert('Barang tidak ditemukan'); return; }
+  const st = productStock(id);
+  openModal('Tambah Stok — ' + p.name, `
+    <p class="text-sm mb-3">Stok saat ini: <b>${st} ${esc(p.unit||'')}</b></p>
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-slate-500">Jumlah Masuk *</label>
+        <input id="as_qty" type="number" value="1" min="1" class="w-full border rounded-lg px-3 py-2 mt-1"/>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Harga Beli / unit</label>
+        <input id="as_cost" type="number" value="${p.buyPrice||0}" class="w-full border rounded-lg px-3 py-2 mt-1"/>
+        <p class="text-xs text-slate-400 mt-1">Kosongkan untuk pakai harga beli master (${rp(p.buyPrice)}).</p>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Catatan</label>
+        <input id="as_note" placeholder="cth: Restock, koreksi stok" class="w-full border rounded-lg px-3 py-2 mt-1"/>
+      </div>
+    </div>`, ()=>{
+    const qty = +document.getElementById('as_qty').value||0;
+    if(qty<=0){ alert('Jumlah harus lebih dari 0'); return false; }
+    const cost = +document.getElementById('as_cost').value || p.buyPrice || 0;
+    DB.stockMoves.push({
+      id: uid('m_'), date: new Date().toISOString(),
+      productId: id, type:'in', qty, cost,
+      note: document.getElementById('as_note').value.trim() || 'Tambah stok manual',
+      ref: ''
+    });
+    saveDB();
+    navigate('products');
+  }, 'Tambah Stok');
+};
 
 window.openProductForm = (id) => {
   const p = id ? findProduct(id) : {name:'',sku:'',category:'',unit:'pcs',buyPrice:0,sellPrice:0,minStock:0};
@@ -440,7 +590,10 @@ window.openProductForm = (id) => {
       <div><label class="text-xs text-slate-500">SKU / Kode</label>
         <input id="p_sku" value="${esc(p.sku)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
       <div><label class="text-xs text-slate-500">Kategori</label>
-        <input id="p_cat" value="${esc(p.category)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+        <input id="p_cat" value="${esc(p.category)}" list="p_cat_list" class="w-full border rounded-lg px-3 py-2 mt-1"/>
+        <datalist id="p_cat_list">
+          ${getAllCategories().map(c=>`<option value="${esc(c)}"></option>`).join('')}
+        </datalist></div>
       <div><label class="text-xs text-slate-500">Satuan</label>
         <input id="p_unit" value="${esc(p.unit)}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
       <div><label class="text-xs text-slate-500">Stok Minimum</label>
@@ -451,7 +604,7 @@ window.openProductForm = (id) => {
         <input id="p_sell" type="number" value="${p.sellPrice||0}" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
       ${!id? `<div class="col-span-2"><label class="text-xs text-slate-500">Stok Awal (opsional)</label>
         <input id="p_stock" type="number" value="0" class="w-full border rounded-lg px-3 py-2 mt-1"/>
-        <p class="text-xs text-slate-400 mt-1">Stok awal akan dicatat sebagai mutasi masuk dengan harga = harga beli.</p></div>`:''}
+        <p class="text-xs text-slate-400 mt-1">Jika nama barang sudah ada, stok akan otomatis <b>ditambahkan</b> ke barang tersebut.</p></div>`:''}
     </div>
   `, ()=>{
     const name = document.getElementById('p_name').value.trim();
@@ -464,13 +617,41 @@ window.openProductForm = (id) => {
       buyPrice:+document.getElementById('p_buy').value||0,
       sellPrice:+document.getElementById('p_sell').value||0,
     };
-    if(id){ Object.assign(findProduct(id), data); }
-    else {
-      const newP = {id:uid('p_'), ...data};
-      DB.products.push(newP);
+    if(id){
+      Object.assign(findProduct(id), data);
+    } else {
+      // === CEK DUPLIKAT NAMA ===
+      const existing = DB.products.find(pp => pp.name.toLowerCase().trim() === name.toLowerCase().trim());
       const initStok = +document.getElementById('p_stock').value||0;
-      if(initStok>0){
-        DB.stockMoves.push({id:uid('m_'),date:new Date().toISOString(),productId:newP.id,type:'in',qty:initStok,cost:data.buyPrice,note:'Stok awal',ref:''});
+
+      if(existing){
+        // Akumulasi stok ke barang yang sudah ada
+        if(initStok > 0){
+          DB.stockMoves.push({
+            id: uid('m_'), date: new Date().toISOString(),
+            productId: existing.id, type:'in', qty:initStok,
+            cost: data.buyPrice || existing.buyPrice,
+            note:'Akumulasi stok (nama sama)', ref:''
+          });
+        }
+        // Update info harga & kategori jika diisi
+        if(data.buyPrice > 0) existing.buyPrice = data.buyPrice;
+        if(data.sellPrice > 0) existing.sellPrice = data.sellPrice;
+        if(data.category) existing.category = data.category;
+        if(data.sku) existing.sku = data.sku;
+        if(data.unit) existing.unit = data.unit;
+        alert(`✅ Barang "${existing.name}" sudah ada.\nStok ditambahkan +${initStok}.\nTotal stok sekarang: ${productStock(existing.id)} ${existing.unit||''}`);
+      } else {
+        // Buat baru
+        const newP = {id:uid('p_'), ...data};
+        DB.products.push(newP);
+        if(initStok>0){
+          DB.stockMoves.push({
+            id:uid('m_'), date:new Date().toISOString(),
+            productId:newP.id, type:'in', qty:initStok, cost:data.buyPrice,
+            note:'Stok awal', ref:''
+          });
+        }
       }
     }
     saveDB(); navigate('products');
@@ -891,7 +1072,8 @@ window.saveHPPAsProduct = () => {
         <div><label class="text-xs text-slate-500">SKU</label>
           <input id="sp_sku" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
         <div><label class="text-xs text-slate-500">Kategori</label>
-          <input id="sp_cat" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
+          <input id="sp_cat" list="sp_cat_list" class="w-full border rounded-lg px-3 py-2 mt-1"/>
+          <datalist id="sp_cat_list">${getAllCategories().map(c=>`<option value="${esc(c)}"></option>`).join('')}</datalist></div>
         <div><label class="text-xs text-slate-500">Satuan</label>
           <input id="sp_unit" value="pcs" class="w-full border rounded-lg px-3 py-2 mt-1"/></div>
         <div><label class="text-xs text-slate-500">Stok Awal</label>
@@ -909,6 +1091,25 @@ window.saveHPPAsProduct = () => {
     if(!nm){ alert('Nama wajib diisi'); return false; }
     const stock = +document.getElementById('sp_stock').value||0;
     const buyPrice = +document.getElementById('sp_buy').value||0;
+    // Cek duplikat
+    const existing = DB.products.find(pp => pp.name.toLowerCase().trim() === nm.toLowerCase().trim());
+    if(existing){
+      if(stock>0){
+        DB.stockMoves.push({
+          id: uid('m_'), date:new Date().toISOString(),
+          productId: existing.id, type:'in', qty:stock, cost:buyPrice,
+          note:'Akumulasi dari kalkulator HPP', ref:''
+        });
+      }
+      existing.buyPrice = buyPrice;
+      existing.sellPrice = +document.getElementById('sp_sell').value||existing.sellPrice;
+      const newCat = document.getElementById('sp_cat').value.trim();
+      if(newCat) existing.category = newCat;
+      saveDB();
+      alert(`✅ Barang "${existing.name}" sudah ada.\nStok ditambahkan +${stock}.`);
+      navigate('products');
+      return;
+    }
     const newP = {
       id: uid('p_'),
       name: nm,
@@ -1174,7 +1375,9 @@ VIEWS.sales = () => `
 
 window.openSaleForm = () => {
   if(!DB.products.length){alert('Tambahkan barang terlebih dahulu');return;}
+  const cats = getAllCategories();
   const custOpts = '<option value="">Pelanggan Umum</option>' + DB.customers.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  SALES_FILTER_CAT = '';
   openModal('Penjualan Baru', `
     <div class="space-y-3">
       <div class="grid grid-cols-2 gap-3">
@@ -1184,7 +1387,13 @@ window.openSaleForm = () => {
           <select id="sa_cust" class="w-full border rounded-lg px-3 py-2 mt-1">${custOpts}</select></div>
       </div>
       <div class="border rounded-lg p-3 bg-slate-50">
-        <div class="font-semibold text-sm mb-2">Item</div>
+        <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
+          <div class="font-semibold text-sm">Item</div>
+          <select id="sa_cat_filter" onchange="saRebuildProductOptions()" class="border rounded px-2 py-1 text-xs bg-white">
+            <option value="">📂 Semua Kategori</option>
+            ${cats.map(c=>`<option value="${esc(c)}">📂 ${esc(c)}</option>`).join('')}
+          </select>
+        </div>
         <div id="sa_items" class="space-y-2"></div>
         <button onclick="addSaleRow()" class="mt-2 text-sm text-brand-600 hover:underline">+ Tambah Item</button>
       </div>
@@ -1246,9 +1455,25 @@ window.openSaleForm = () => {
   });
   addSaleRow();
 };
+
+window.saRebuildProductOptions = () => {
+  const catFilter = document.getElementById('sa_cat_filter')?.value || '';
+  const products = DB.products.filter(p => !catFilter || (p.category||'') === catFilter);
+  const opts = '<option value="">-- Pilih Barang --</option>' + products.map(p=>`<option value="${p.id}" data-price="${p.sellPrice}" data-stock="${productStock(p.id)}">${esc(p.name)} (stok ${productStock(p.id)})</option>`).join('');
+  document.querySelectorAll('#sa_items .sa-prod').forEach(sel => {
+    const cur = sel.value;
+    sel.innerHTML = opts;
+    if(cur && products.some(p=>p.id===cur)) sel.value = cur;
+    else sel.value = '';
+  });
+  recalcSale();
+};
+
 window.addSaleRow = () => {
   const box = document.getElementById('sa_items');
-  const productOpts = '<option value="">-- Pilih Barang --</option>' + DB.products.map(p=>`<option value="${p.id}" data-price="${p.sellPrice}" data-stock="${productStock(p.id)}">${esc(p.name)} (stok ${productStock(p.id)})</option>`).join('');
+  const catFilter = document.getElementById('sa_cat_filter')?.value || '';
+  const products = DB.products.filter(p => !catFilter || (p.category||'') === catFilter);
+  const productOpts = '<option value="">-- Pilih Barang --</option>' + products.map(p=>`<option value="${p.id}" data-price="${p.sellPrice}" data-stock="${productStock(p.id)}">${esc(p.name)} (stok ${productStock(p.id)})</option>`).join('');
   const div = document.createElement('div');
   div.className = 'grid grid-cols-12 gap-2 items-center';
   div.innerHTML = `
@@ -1264,6 +1489,7 @@ window.addSaleRow = () => {
   };
   div.querySelectorAll('input').forEach(inp=>inp.oninput = recalcSale);
 };
+
 function recalcSale(){
   let sub = 0, hpp = 0;
   document.querySelectorAll('#sa_items > div').forEach(r=>{
@@ -1292,6 +1518,7 @@ function recalcSale(){
   if(changeRow && changeAmt){
     if(paid > 0 && paid >= total && change > 0){
       changeRow.classList.remove('hidden');
+      changeRow.className = 'flex justify-between text-sm text-emerald-600';
       changeAmt.textContent = rp(change);
     } else if(paid > 0 && paid < total){
       changeRow.classList.remove('hidden');
@@ -1337,7 +1564,7 @@ window.openPaySale = (id) => {
 };
 
 /* ============================================================
-   === PENJUALAN EM (Easy Mode) ===
+   === PENJUALAN EM (Easy Mode) — dikelompokkan per kategori ===
    ============================================================ */
 VIEWS.sales_em = () => {
   if(!DB.products.length){
@@ -1347,6 +1574,7 @@ VIEWS.sales_em = () => {
       <button onclick="navigate('products')" class="bg-brand-600 text-white px-4 py-2 rounded-lg text-sm">+ Tambah Barang</button>
     </div>`;
   }
+  const cats = getAllCategories();
   return `
     <div class="mb-4 flex justify-between items-center flex-wrap gap-2">
       <div>
@@ -1355,7 +1583,15 @@ VIEWS.sales_em = () => {
       </div>
       <input id="em_search" placeholder="🔍 Cari produk..." class="border rounded-lg px-3 py-2 text-sm w-full sm:w-72" oninput="emFilterProducts()"/>
     </div>
-    <div id="em_products" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 pb-32"></div>
+
+    <div class="flex gap-2 mb-4 overflow-x-auto pb-1">
+      <button onclick="emSetCategory('')" data-emcat="" class="em-cat-chip whitespace-nowrap px-3 py-1.5 rounded-full border text-sm hover:border-brand-500">📂 Semua</button>
+      ${cats.map(c=>`
+        <button onclick="emSetCategory('${esc(c).replace(/'/g,"\\'")}')" data-emcat="${esc(c)}" class="em-cat-chip whitespace-nowrap px-3 py-1.5 rounded-full border text-sm hover:border-brand-500">${esc(c)}</button>
+      `).join('')}
+    </div>
+
+    <div id="em_products" class="pb-32"></div>
 
     <div class="fixed bottom-4 right-4 md:right-6 z-30">
       <button onclick="emOpenCart()" class="bg-brand-600 hover:bg-brand-700 text-white rounded-full shadow-2xl px-5 py-3 flex items-center gap-2">
@@ -1369,9 +1605,27 @@ VIEWS.sales_em = () => {
 
 VIEWS.sales_em_bind = () => {
   EM_CART = [];
+  EM_SELECTED_CAT = '';
   emRenderProducts();
   emUpdateCartBadge();
+  emHighlightCatChip();
 };
+
+window.emSetCategory = (cat) => {
+  EM_SELECTED_CAT = cat;
+  emHighlightCatChip();
+  emRenderProducts();
+};
+
+function emHighlightCatChip(){
+  document.querySelectorAll('.em-cat-chip').forEach(btn => {
+    const on = (btn.dataset.emcat||'') === (EM_SELECTED_CAT||'');
+    btn.classList.toggle('bg-brand-600', on);
+    btn.classList.toggle('text-white', on);
+    btn.classList.toggle('border-brand-600', on);
+    btn.classList.toggle('font-semibold', on);
+  });
+}
 
 function emFilterProducts(){ emRenderProducts(); }
 
@@ -1379,27 +1633,59 @@ function emRenderProducts(){
   const box = document.getElementById('em_products');
   if(!box) return;
   const q = (document.getElementById('em_search')?.value || '').toLowerCase();
-  const list = DB.products.filter(p =>
+  let list = DB.products.filter(p =>
     !q || p.name.toLowerCase().includes(q) || (p.sku||'').toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q)
   );
+  if(EM_SELECTED_CAT){
+    list = list.filter(p => (p.category||'').trim() === EM_SELECTED_CAT);
+  }
   if(!list.length){
-    box.innerHTML = `<div class="col-span-full text-center p-8 text-slate-400">Produk tidak ditemukan</div>`;
+    box.innerHTML = `<div class="text-center p-8 text-slate-400">Produk tidak ditemukan</div>`;
     return;
   }
-  box.innerHTML = list.map(p => {
-    const st = productStock(p.id);
-    const cartItem = EM_CART.find(c => c.productId === p.id);
-    const qtyInCart = cartItem ? cartItem.qty : 0;
-    const outOfStock = st <= 0;
-    return `
-      <button onclick="emAddToCart('${p.id}')" class="relative bg-white rounded-xl border hover:border-brand-500 hover:shadow-md transition p-3 text-left ${outOfStock?'opacity-50 cursor-not-allowed':''}" ${outOfStock?'disabled':''}>
-        <div class="aspect-square bg-gradient-to-br from-brand-50 to-brand-100 rounded-lg flex items-center justify-center mb-2 text-4xl">📦</div>
-        <div class="font-semibold text-sm truncate">${esc(p.name)}</div>
-        <div class="text-xs text-slate-500 truncate">Stok: ${st} ${esc(p.unit||'')}</div>
-        <div class="text-brand-700 font-bold text-sm mt-1">${rp(p.sellPrice)}</div>
-        ${qtyInCart>0?`<div class="absolute top-2 right-2 bg-brand-600 text-white text-xs font-bold rounded-full w-7 h-7 flex items-center justify-center shadow">${qtyInCart}</div>`:''}
-      </button>`;
-  }).join('');
+
+  // Group by category
+  const groups = {};
+  list.forEach(p => {
+    const cat = (p.category||'').trim() || 'Tanpa Kategori';
+    if(!groups[cat]) groups[cat] = [];
+    groups[cat].push(p);
+  });
+  const sortedCats = Object.keys(groups).sort((a,b)=>{
+    if(a === 'Tanpa Kategori') return 1;
+    if(b === 'Tanpa Kategori') return -1;
+    return a.localeCompare(b,'id');
+  });
+
+  let html = '';
+  sortedCats.forEach(cat => {
+    html += `
+      <div class="flex items-center gap-2 mt-5 mb-2">
+        <h3 class="font-bold text-base">${esc(cat)}</h3>
+        <span class="text-xs text-slate-500">(${groups[cat].length} produk)</span>
+        <div class="flex-1 h-px bg-slate-200"></div>
+      </div>`;
+    html += `<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">`;
+    html += groups[cat].map(p => emProductCardHTML(p)).join('');
+    html += `</div>`;
+  });
+  box.innerHTML = html;
+}
+
+function emProductCardHTML(p){
+  const st = productStock(p.id);
+  const cartItem = EM_CART.find(c => c.productId === p.id);
+  const qtyInCart = cartItem ? cartItem.qty : 0;
+  const outOfStock = st <= 0;
+  return `
+    <button onclick="emAddToCart('${p.id}')" class="relative bg-white rounded-xl border hover:border-brand-500 hover:shadow-md transition p-3 text-left ${outOfStock?'opacity-60':''}">
+      <div class="aspect-square bg-gradient-to-br from-brand-50 to-brand-100 rounded-lg flex items-center justify-center mb-2 text-4xl">📦</div>
+      <div class="font-semibold text-sm truncate">${esc(p.name)}</div>
+      <div class="text-xs ${outOfStock?'text-red-500 font-semibold':'text-slate-500'} truncate">Stok: ${st} ${esc(p.unit||'')}</div>
+      <div class="text-brand-700 font-bold text-sm mt-1">${rp(p.sellPrice)}</div>
+      ${outOfStock?`<div class="absolute top-2 left-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">HABIS</div>`:''}
+      ${qtyInCart>0?`<div class="absolute top-2 right-2 bg-brand-600 text-white text-xs font-bold rounded-full w-7 h-7 flex items-center justify-center shadow">${qtyInCart}</div>`:''}
+    </button>`;
 }
 
 window.emAddToCart = (id) => {
@@ -1408,10 +1694,16 @@ window.emAddToCart = (id) => {
   const st = productStock(id);
   const item = EM_CART.find(c => c.productId === id);
   if(item){
-    if(item.qty >= st){ alert('Stok tidak cukup'); return; }
+    if(item.qty >= st){ alert('Stok tidak cukup. Sisa: ' + st); return; }
     item.qty++;
   } else {
-    if(st <= 0){ alert('Stok habis'); return; }
+    if(st <= 0){
+      if(confirm('Stok habis. Tambah stok dulu untuk produk ini?')){
+        closeModalSilent();
+        openAddStock(id);
+      }
+      return;
+    }
     EM_CART.push({productId: id, qty: 1});
   }
   emRenderProducts();
@@ -1629,7 +1921,6 @@ function emFinalizeSale(custId, subtotal, disc, discType, discVal, total){
   emRenderProducts();
   emUpdateCartBadge();
 
-  // Tampilkan konfirmasi cetak (setelah modal tertutup)
   setTimeout(()=>{
     const printNow = confirm(`✅ Transaksi berhasil!\n\nTotal: ${rp(total)}\nDibayar: ${rp(paid)}\nKembalian: ${rp(change)}\n\nCetak struk?`);
     if(printNow) printSale(sale.id);
@@ -1866,7 +2157,18 @@ VIEWS.settings = () => `
     </div>
 
     <div class="bg-white rounded-xl border p-4">
-      <h3 class="font-semibold mb-3">💾 Backup & Restore</h3>
+      <h3 class="font-semibold mb-3">🎨 Tampilan</h3>
+      <div class="space-y-2">
+        <label class="flex items-center justify-between border rounded-lg p-3 cursor-pointer hover:bg-slate-50">
+          <div>
+            <div class="font-semibold text-sm">🌙 Mode Gelap</div>
+            <div class="text-xs text-slate-500">Tampilan gelap untuk mata nyaman di malam hari</div>
+          </div>
+          <input id="set_dark" type="checkbox" ${DB.settings.darkMode?'checked':''} class="w-5 h-5 accent-brand-600" onchange="toggleDarkFromSettings(this.checked)"/>
+        </label>
+      </div>
+
+      <h3 class="font-semibold mt-5 mb-3">💾 Backup & Restore</h3>
       <div class="space-y-2">
         <button onclick="exportAllJSON()" class="w-full border py-2 rounded-lg text-sm hover:bg-slate-50">📥 Export JSON (backup penuh)</button>
         <button onclick="exportAllExcel()" class="w-full border py-2 rounded-lg text-sm hover:bg-slate-50">📊 Export Excel (semua data)</button>
@@ -1892,6 +2194,12 @@ VIEWS.settings = () => `
       </div>
     </div>
   </div>`;
+
+window.toggleDarkFromSettings = (on) => {
+  DB.settings.darkMode = !!on;
+  saveDB();
+  applyDarkMode();
+};
 
 window.saveBusinessInfo = () => {
   DB.business.name = document.getElementById('st_name').value.trim() || DB.business.name;
@@ -2093,6 +2401,7 @@ function openPrinterModal(){
 /* ---------- Boot ---------- */
 function renderApp(){
   loadDB();
+  applyDarkMode();
   const root = document.getElementById('app');
   if(!DB.business){ root.innerHTML = renderOnboarding(); bindOnboarding(); }
   else { root.innerHTML = renderMain(); bindMain(); navigate(currentView); }
